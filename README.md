@@ -144,16 +144,19 @@ Design Plan
 6. Evaluation and Monitoring
    1. Strategy:
       1. Offline Evaluation: Create a diverse held-out test set (~1k-5k PRs). Evaluate using BERTScore for semantic similarity to human comments, Precision/Recall on commented lines, and implement unit tests for known edge cases (e.g., large diffs, specific languages, empty files). Analyze performance differences across major programming languages in the dataset.
-      2. Load Testing:** Use a tool (e.g., locust, k6) to simulate 20-50 concurrent webhook events hitting the staging environment. Measure API response times (p50, p95, p99), error rates, and resource utilization (CPU, RAM, GPU) under load.
-      3. Online Evaluation:** Implement A/B testing during canary deployments. Compare metrics like comment acceptance rate (via feedback buttons), thumbs up/down reactions, and potentially developer survey feedback between the challenger (new) and control (current production) model versions.
-      4. Business Evaluation:** Define metric for "developer time saved" (e.g., estimated time saved per accepted comment category * acceptance rate). Track % accepted vs. rejected/ignored comments.
+      2. Load Testing:** Simulate 20–50 concurrent webhook events (using tools like Locust or k6) hitting the staging environment. Measure API response times (p50, p95, p99), error rates, and resource utilization (CPU, RAM, GPU) under load.
+
+      3. Online Evaluation:** Perform canary testing with artificial users (team members) on live PRs. Monitor real-time model responses and track model-specific metrics such as prediction confidence using Prometheus and Grafana dashboards.
+      4. Business Evaluation:** Estimate "developer time saved" using offline evaluation metrics: location precision/recall and semantic similarity scores as proxies for comment usefulness. Combine with category-wise estimates of review effort to approximate time saved.
+
+ Track % accepted vs. rejected/ignored comments.
    2. Justification:
       1. Offline: Ensures model correctness and quality before deployment.
       2. Load Testing: Validates performance and stability under expected load.
-      3. Online: Measures real-world impact and effectiveness. A/B testing provides statistically sound comparisons.
+      3. Online: Measures real-world impact and effectiveness. Canary testing provides safe, incremental rollout insights.
       4. Business Eval: Connects technical metrics to business value.
    3. Guesstimates:
-      1. Held-out Test Set Size: 1-2 pairs.
+      1. Held-out Test Set Size: ~1-2k pairs.
       2. Load Test Simulation: 30-60 minutes runs simulating 20-50 users/webhooks.
 
 ---
@@ -226,7 +229,9 @@ Qualitative human evaluation on a subset for relevance, correctness, and actiona
 ##### 3. Model Serving (Unit 6)
 ##### 3.1 Serving from an API Endpoint
 - **Component**: Webhook Listener API (FastAPI)  
-  - Wraps the model pipeline, receives a GitHub PR event, and routes it through the inference flow  
+  - Wraps the entire model pipeline (Classifier -> LLM -> Ranker)
+  - Receives a GitHub PR event, and routes it through the inference flow  
+  - Returns structured JSON with comments, line numbers, etc.
   - Dockerized and runs continuously to handle live GitHub PRs  
 
 ##### 3.2 Specific Inference Requirements (MVP Targets)
@@ -249,6 +254,7 @@ Qualitative human evaluation on a subset for relevance, correctness, and actiona
   - Async request handling in FastAPI  
   - Dynamic batching and concurrent model execution  
     - Enabled via multiple GPU-backed model instances and dynamic batching in NVIDIA Triton to support high throughput and low latency inference  
+  - Optionally cache common inference patterns to reduce latency.
   - Dockerized deployment for portability and reproducibility  
 
 
@@ -257,6 +263,9 @@ Qualitative human evaluation on a subset for relevance, correctness, and actiona
 - **Serving Strategy Evaluation**  
   - Compare model serving on server-grade GPU vs server-grade CPU using the same deployment setup. 
   - Evaluate trade-offs in latency, throughput, and cost of deployment using commercial cloud infrastructure (e.g., Chameleon Cloud).
+  - Target inference latency for the quantized 7B model: ~5–20 seconds per PR with batching (depending on diff length and context size). Classifier/Ranker expected to add ~0.5–2 seconds.
+  - Target concurrency: ~10–20 concurrent requests.
+  - Target batch size: ~4–16 depending on GPU memory and latency tolerance.
 
 
 
@@ -267,44 +276,56 @@ Qualitative human evaluation on a subset for relevance, correctness, and actiona
 ##### 4.1 Offline Evaluation
 After model training, we conduct automated offline evaluations:
 
-- **General Metrics**: Overall accuracy (e.g., BERTScore/F1 for text) – logged via MLFlow  
-- **Bias & Fairness**: Performance on PR slices (e.g., small vs large PRs, bugfix vs feature PRs)  
-- **Known Failure Modes**: PRs with outdated diffs, high token count, or structurally similar examples that previously failed  
-- **Template-Based Tests**: Checking LLM predictions for identical PRs with different comment instructions  
+- **General Metrics**: Measure overall accuracy (e.g., BERTScore/F1 for text) – logged via MLFlow  
+- **Bias & Fairness**: Measure performance on PR slices (e.g., small vs large PRs, bugfix vs feature PRs)  
+- **Known Failure Modes**: Measure model behavior on PRs with outdated diffs, high token count, or structurally similar examples that previously failed  
+- **Template-Based Tests**: Check LLM predictions for identical PRs with different comment instructions  
 - **Test Suite**: Implemented using `pytest`, and integrated into the training pipeline  
   - Based on results, models are automatically registered or discarded  
 - **Automated Model Registration**: Pass/fail logic in test suite decides model promotion  
 
 ##### 4.2 Load Testing
-- Conducted in a staging environment using simulated GitHub PR events  
+- Conducted in a staging environment using simulated GitHub PR events
+- Simulate 20–50 concurrent webhook events using tools like Locust or k6 
 - Operational metrics measured via Prometheus:  
-  - Latency, throughput, and error rates 
-- Observed under varied load patterns to validate FastAPI + Triton under concurrent requests  
-- Results visualized via Grafana dashboards  
+  - Latency distributions (p50, p95, p99)  
+  - Throughput (requests per second)  
+  - Error rates (e.g., 5xx, timeouts)  
+  - Resource utilization: CPU, RAM, GPU usage  
+- Observe under varied load patterns to validate FastAPI + Triton under concurrent requests  
+- Visualize results using Grafana dashboards  
 
 ##### 4.3 Online Evaluation via Canary
 - Online evaluation with artificial users (team members)  
 - Real-time observation of model responses on live PRs  
-- Monitoring model-specific metrics such as prediction confidence using Prometheus and Grafana  
+- Monitor model-specific metrics such as prediction confidence using Prometheus and Grafana  
 
 ##### 4.4 Close the Loop
 - No user feedback is collected  
-- Monitoring drift using:  
+- Monitor drift using:  
   - Drift events (`drift_events_total`)  
   - Test statistic (`drift_test_stat`)  
-- Infrastructure and application-level health tracked through Prometheus + Grafana  
+- Track infrastructure and application-level health through Prometheus + Grafana  
 
 
-##### 4.5 Define a Business-Specific Evaluation
+##### 4.5 Business-Specific Evaluation
 
 - **Location Awareness**  
   - *Precision*: Of all the locations where the model generated comments, what fraction matched actual human comment locations in the test set?  
   - *Recall*: Of all the human-generated comment locations in the test set, what fraction were identified by the model?  
 
 - **Semantic Similarity**  
-  - *BERTScore*: Measures the similarity between model-generated comments and human comments using contextual embeddings from BERT. This captures semantic alignment beyond surface-level token overlap.  
+  - *BERTScore*: Measure the similarity between model-generated comments and human comments using contextual embeddings from BERT. This captures semantic alignment beyond surface-level token overlap.  
 
 These metrics serve as proxies for usefulness and alignment with human reviewers and will be computed on a held-out labeled test set.
+
+##### Estimated Developer Time Saved
+
+- Use location precision/recall and semantic similarity scores to estimate the proportion of high-quality, relevant comments
+
+- Based on review effort benchmarks per comment category (e.g., formatting, bug spotting), approximate developer time saved
+
+- Example: If the model identifies 70% of relevant comment locations with high semantic similarity, and each comment saves ~30 seconds of developer time, we extrapolate total time saved across evaluated PRs.
 
 ---
 #### *III. Continuous X*
