@@ -45,7 +45,7 @@ Metric to be judged on:
 
 ### System Diagram
 
-![](Screenshot%202025-04-03%20at%207.22.26%E2%80%AFPM.png)
+![](https://github.com/BugBeak/MLOps/blob/main/system_diagram.png?raw=true)
 
 
 
