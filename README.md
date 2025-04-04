@@ -36,10 +36,10 @@ Metric to be judged on:
 | Name               | Responsible for                                              | Link to their commits in this repo |
 |--------------------|--------------------------------------------------------------|------------------------------------|
 | All team members   | Overall design of ML System, Value Proposition, Decisions around Content Extraction at Inference, Custom dataset, Model selection, UI/UX of the bot, Extra difficulty components |                                    |
-|                    | Model Serving & Monitoring                                             |                                    |
-|                   | Model Training and Experimentation                           |                                    |
-|                    | Data Pipeline                                   |                                    |
-|                    | Continuous X pipeline                                                |                                    |
+|  Nidhi Donuru     | Model Serving & Monitoring                                              |    https://github.com/BugBeak/MLOps/commits/main/?author=nidhiid                                |
+| Khushi Sharma      | Model Training and Experimentation                           |          https://github.com/BugBeak/MLOps/commits/main/?author=BugBeak                            |
+|Rishabh Budhouliya       | Data Pipeline                                       |    https://github.com/BugBeak/MLOps/commits/main/?author=rishabhBudhouliya                                 |
+|   Riya Patil       | Continuous X Pipeline                                                |      https://github.com/BugBeak/MLOps/commits/main/?author=Riyap30                |               |
 
 ---
 ### System Diagram
@@ -54,8 +54,6 @@ Metric to be judged on:
 |------------|--------------------------------------------------------------|--------------------------------------------------------------|
 | Code LLaMA | Code LLaMA                                                   | 1. **No Direct Model Hosting**: You can’t redistribute the raw model weights as-is; instead, you’re encouraged to use them in applications or fine-tune them, adhering to the license terms.<br>2. **Disclosure**: If deploying Code LLaMA in a product, inform users it’s AI-generated content where appropriate (e.g., watermarking via tools like SynthID, if applicable).<br>3. **Governance**: Establish accountability mechanisms (e.g., logging usage, monitoring outputs) to address misuse or errors.<br>4. **Safety Measures**: Implement safeguards like human oversight or filtering to prevent unintended outcomes, especially since Code LLaMA can generate executable code. |
 | StarCoder  | [StarCoder: A State-of-the-Art LLM for Code](https://huggingface.co/blog/starcoder) | This an **Apache-2.0 License** model<br>**Use**: We can freely use StarCoder for any purpose—personal, academic, or commercial—without royalties or fees. This includes running it as-is, integrating it into applications, or deploying it in production systems.<br>**Modification**: We’re allowed to modify the source code or model to suit our needs.<br>**Distribution**: We can distribute the original or modified versions of StarCoder, either as source code, binaries, or model weights, to others. |
-| Dataset 1  |                                                              |                                                              |
-|            |                                                              |                                                              |
 
 ### Summary of infrastructure requirements
 
@@ -161,7 +159,8 @@ Design Plan
 
 ---
 
-#### *I. Model training and training platforms*
+
+### Model training and training platforms
 
 ##### **1. Model Training at Scale (Unit 4)**
 
@@ -182,13 +181,13 @@ Design Plan
 - **Model Choice:** Fine-tune **StarCoder or LLaMA** using **LoRA/qLoRA** to reduce memory requirements.
 - **Loss Function:** Cross-entropy loss optimized for sequence generation tasks.
 - **Evaluation Metrics:**
-  -  Semantic similarity (e.g., BERTScore) to check if the meaning aligns.
+  - Semantic similarity (e.g., BERTScore) to check if the meaning aligns.
   - Overlap in commented lines/regions (Precision/Recall/F1).
 Qualitative human evaluation on a subset for relevance, correctness, and actionability.
 
 
 ##### **1.4 Training Strategies for Large Models (Optional Difficulty)**
-- ** Strategies:**
+- Strategies:
   - **FSDP (Fully Sharded Data Parallelism):** Efficient distribution of training across multiple GPUs.
   - **ZeRO (Zero Redundancy Optimizer):** Reduces memory footprint.
   - **Mixed Precision Training:** Lowers memory usage while maintaining performance.
@@ -225,7 +224,7 @@ Qualitative human evaluation on a subset for relevance, correctness, and actiona
 
 ---
 
-#### *II. Model Serving and Monitoring Platforms*
+### Model Serving and Monitoring Platforms
 ##### 3. Model Serving (Unit 6)
 ##### 3.1 Serving from an API Endpoint
 - **Component**: Webhook Listener API (FastAPI)  
@@ -238,9 +237,9 @@ Qualitative human evaluation on a subset for relevance, correctness, and actiona
 - **Use Case**: Automatic review commenting on GitHub PRs  
 - **Model Type**: Fine-tuned LLM using QLoRA  
 - **Model Size**: ~4.5 GB, enabling fast loading and inference on P100  
-- **Latency**: <= 5 seconds per PR  
+- **Latency**: <= few minutes per PR  
 - **Throughput**: ~3–5 PRs per minute (with batching/dynamic batching)  
-- **Concurrency**: 2 PRs  
+- **Concurrency**: 10-15 PRs  
 - **Deployment**: FastAPI + Docker + P100 GPU  
 - **Backend Serving**: Triton or Ray Serve for autoscaling  
 
@@ -257,7 +256,6 @@ Qualitative human evaluation on a subset for relevance, correctness, and actiona
   - Optionally cache common inference patterns to reduce latency.
   - Dockerized deployment for portability and reproducibility  
 
-
 ##### 3.4 Optional Difficulty Points
 
 - **Serving Strategy Evaluation**  
@@ -267,12 +265,9 @@ Qualitative human evaluation on a subset for relevance, correctness, and actiona
   - Target concurrency: ~10–20 concurrent requests.
   - Target batch size: ~4–16 depending on GPU memory and latency tolerance.
 
-
-
 ---
 
-##### 4. Monitoring & Evaluation (Unit 7)
-
+### Monitoring & Evaluation
 ##### 4.1 Offline Evaluation
 After model training, we conduct automated offline evaluations:
 
@@ -328,10 +323,9 @@ These metrics serve as proxies for usefulness and alignment with human reviewers
 - Example: If the model identifies 70% of relevant comment locations with high semantic similarity, and each comment saves ~30 seconds of developer time, we extrapolate total time saved across evaluated PRs.
 
 ---
-#### *III. Continuous X*
+### Continuous X
 ##### 5. DevOps (Unit 3)
 ##### 5.1 Infrastructure-as-Code (IaC)
-
 To provision and manage infrastructure declaratively:
 
 - **Terraform**: Define cloud infrastructure (compute, storage, networking).
@@ -341,15 +335,14 @@ To provision and manage infrastructure declaratively:
 
 IaC Implementation Steps:
 - Define Terraform modules for:
-   - **Compute**: GPU/CPU nodes for model training & inference.
-   - **Storage**: Persistent storage for datasets and models.
-   - **Networking**: API Gateway, Load Balancer, VPC.
+  - **Compute**: GPU/CPU nodes for model training & inference.
+  - **Storage**: Persistent storage for datasets and models.
+  - **Networking**: API Gateway, Load Balancer, VPC.
 - Automate provisioning using Terraform (`terraform apply` from GitHub Actions).
 - Use Ansible to install dependencies (e.g., MLFlow, FastAPI).
 - ArgoCD watches Git repositories and auto-deploys services on Kubernetes.
 
 ---
-
 ##### 5.2 Cloud-Native Architecture
 
 To follow cloud-native principles of:
@@ -357,28 +350,25 @@ To follow cloud-native principles of:
 - (b) Containers as the Smallest Compute Unit
 - (c) Immutable Infrastructure
 
-##### **Cloud-Native Components**
-
-##### **GitHub API Scraper (Data Pipeline)**
+**Cloud-Native Components**
+**GitHub API Scraper (Data Pipeline)**
 - Runs as a **Dockerized job** within Apache Airflow.
 - Stores scraped data in persistent storage (e.g., **MinIO**).
 
-##### **Model Training and Experimentation**
+**Model Training and Experimentation**
 - Uses **MLFlow** for hyperparameter tuning and tracking.
 - Runs **PEFT-based fine-tuning** on GPUs.
 - Saves models to object storage.
 
-##### **Inference & Model Serving**
+**Inference & Model Serving**
 - Uses **FastAPI** as an inference endpoint.
 - Runs the fine-tuned **LLM (TGI)** in a containerized GPU pod.
 
-##### **Automated ML Pipeline**
+**Automated ML Pipeline**
 - Triggers training based on **new data** or **schedule**.
 - Automates **hyperparameter tuning and evaluation**.
 
-
 ---
-
 ##### 5.3 CI/CD & Continuous Training
 
 To automate model updates and deployments:
@@ -393,17 +383,16 @@ To automate model updates and deployments:
 - **Scheduled Training** → Runs model updates periodically.
 
 ##### **CI/CD Pipeline**
-   - Lints Python code, Dockerfiles, Terraform.
-   - Runs unit tests (**pytest**) on ML components.
-   - Builds Docker images (`docker build`).
-   - Detects data changes.
-   - Runs training and evaluation in **Argo Workflows**.
-   - Stores the model in **MLFlow**.
-   - Packages model inside a **TGI container**.
-   - Deploys to **staging** using ArgoCD.
+- Lints Python code, Dockerfiles, Terraform.
+- Runs unit tests (**pytest**) on ML components.
+- Builds Docker images (`docker build`).
+- Detects data changes.
+- Runs training and evaluation in **Argo Workflows**.
+- Stores the model in **MLFlow**.
+- Packages model inside a **TGI container**.
+- Deploys to **staging** using ArgoCD.
 
 ---
-
 ##### 5.4 Staged Deployment (Staging, Canary, Production)
 
 To safely release model updates:
@@ -412,6 +401,42 @@ To safely release model updates:
 - **Staging**: Runs in a separate namespace.
 - **Canary Deployment**: Gradually increases traffic to the new model.
 - **Production Rollout**: Fully replaces the old model if canary tests pass.
+
+##### **Staged Deployment Steps**
+- ArgoCD auto-deploys new model versions.
+- Check **API responses, latency, accuracy**.
+- Split traffic **90/10 (old/new)**.
+- Use **Prometheus & Grafana** for observability.
+- Roll out to 100% if no issues are detected.
+
+
+### Data Pipeline
+
+**1. Persistent Storage:**
+
+* Provision persistent block and object storage on Chameleon for non-Git artifacts (datasets, models, logs, checkpoints, MLFlow data). Volumes attach to VMs as needed.
+* **Justification:** Ensures data durability and separates large artifacts from Git. Meets the Chameleon requirement.
+* **Guesstimate:** 100 GB initial capacity.
+
+**2. Offline Data:**
+
+* Curate 10k-50k GitHub PR diff/comment pairs (permissive licenses) for training/evaluation. Store processed data (JSONL/Parquet) in Chameleon Object Storage, versioned using DVC integrated with Git.
+* **Justification:** Provides quality training data; versioning ensures reproducibility.
+
+**3. Data Pipelines (ETL):**
+
+* Automated Python pipeline using GitHub API to:
+  1. **Extract:** Fetch PRs, diffs, comments, file context from target repos.
+  2. **Transform:** Align comments to code lines, extract context, clean/filter data, structure into JSONL/Parquet.
+  3. **Load:** Store processed data in Object Storage, track versions with DVC.
+* **Implementation:** Scheduled scripts (e.g., daily/weekly cron).
+* **Justification:** Automates data acquisition and preparation, ensuring consistency for training.
+
+**4. Online Data & Simulation:**
+
+* **Online Pipeline:** GitHub webhooks -> Webhook Listener service -> Queue (Redis/RabbitMQ) -> Worker service (fetches context, preprocesses) -> Inference services.
+* **Simulation:** Python script reads offline data, generates realistic GitHub webhook JSON payloads, and sends them (at configurable rates/bursts simulating 10-20 concurrent PRs) to the staging environment's Webhook Listener endpoint.
+* **Justification:** Asynchronous pipeline handles live requests efficiently. Simulation enables robust development, testing (including load testing), and debugging without live traffic dependency.
 
 ##### **Staged Deployment Steps**
    - ArgoCD auto-deploys new model versions.
