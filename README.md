@@ -30,19 +30,18 @@ Metric to be judged on:
 2. Semantic Similarity:  **BERTScore:** Computes similarity using contextual embeddings from BERT, focusing on semantic meaning rather than just exact word matches.
 
 
-### Outside materials
-
 
 ### Contributors
 
 | Name               | Responsible for                                              | Link to their commits in this repo |
 |--------------------|--------------------------------------------------------------|------------------------------------|
-| All team members   | DevOps, Overall design of ML System, Value Proposition, Decisions around Content Extraction at Inference, Custom dataset, Model selection, UI/UX of the bot |                                    |
-| Nidhi Donuru       | Model Serving                                                |                                    |
-| Riya Patil         | Model Training and Experimentation                           |                                    |
-| Khushi Sharma      | Evaluation and Monitoring                                    |                                    |
-| Rishabh Budhouliya | Data Pipeline                                                |                                    |
+| All team members   | Overall design of ML System, Value Proposition, Decisions around Content Extraction at Inference, Custom dataset, Model selection, UI/UX of the bot, Extra difficulty components |                                    |
+|                    | Model Serving & Monitoring                                             |                                    |
+|                   | Model Training and Experimentation                           |                                    |
+|                    | Data Pipeline                                   |                                    |
+|                    | Continuous X pipeline                                                |                                    |
 
+---
 ### System Diagram
 
 ![](https://github.com/BugBeak/MLOps/blob/main/system_diagram.png?raw=true)
@@ -74,6 +73,7 @@ Metric to be judged on:
 |                                  | m1.medium                    | 1        | 1            | Webhook Handler: Handle incoming GitHub events reliably      |
 |                                  | gpu_a100 / gpu_v100          | 1        | -            | Retraining Pipeline: Run scheduled retraining jobs           |
 
+---
 ### Detailed design plan
 
 Core Assumptions & Ground Truth:
@@ -156,380 +156,247 @@ Design Plan
       1. Held-out Test Set Size: 1-2 pairs.
       2. Load Test Simulation: 30-60 minutes runs simulating 20-50 users/webhooks.
 
+---
 
-#### Model training and training platforms
-##### **Model Training at Scale (Unit 4)**
-###### **1. Train and Re-train the Model**
+#### *I. Model training and training platforms*
 
+##### **1. Model Training at Scale (Unit 4)**
+
+##### **1.1 Train and Re-train the Model**
 - Fine-tune an open-source, code-specialized **LLM** (StarCoder2 7B or Code Llama 13B (Instruct)**).
-
 - Implement **Parameter-Efficient Fine-Tuning (PEFT)** techniques like **LoRA or QLoRA**.
-
 - Train the model using **instruction-based fine-tuning** to generate review comments based on code diffs.
-
 - The model will be **re-trained periodically** using newly collected GitHub PR data.
 
-###### **2. Context Enhancement (Chosen Method: Simple Context Injection)**
-
+##### **1.2. Context Enhancement (Chosen Method: Simple Context Injection)**
 - Before sending the PR diff to the LLM, **extract relevant rules and guidelines** from project documentation (e.g., `CONTRIBUTING.md`, `STYLE.md`, `.eslintrc`, `.prettierrc`).
-
 - **Inject this extracted context** into the LLM prompt alongside the diff.
-
 - **Rationale:**
+  - Chosen over full code-retrieval RAG or code lineage tracking due to **lower complexity** and better feasibility within a **1-month timeframe**.
+  - Provides **project-specific guidance** to the LLM without significant overhead.
 
-- Chosen over full code-retrieval RAG or code lineage tracking due to **lower complexity** and better feasibility within a **1-month timeframe**.
-
-- Provides **project-specific guidance** to the LLM without significant overhead.
-
-###### **3. Modeling**
-
+##### **1.3 Modeling**
 - **Model Choice:** Fine-tune **StarCoder or LLaMA** using **LoRA/qLoRA** to reduce memory requirements.
 - **Loss Function:** Cross-entropy loss optimized for sequence generation tasks.
 - **Evaluation Metrics:**
-- Semantic similarity (e.g., BERTScore) to check if the meaning aligns.
-- Overlap in commented lines/regions (Precision/Recall/F1).
-- Qualitative human evaluation on a subset for relevance, correctness, and actionability.
+  -  Semantic similarity (e.g., BERTScore) to check if the meaning aligns.
+  - Overlap in commented lines/regions (Precision/Recall/F1).
+Qualitative human evaluation on a subset for relevance, correctness, and actionability.
 
 
-###### **4. Training Strategies for Large Models (Optional Difficulty)**
-
+##### **1.4 Training Strategies for Large Models (Optional Difficulty)**
 - ** Strategies:**
-- **FSDP (Fully Sharded Data Parallelism):** Efficient distribution of training across multiple GPUs.
-- **ZeRO (Zero Redundancy Optimizer):** Reduces memory footprint.
-- **Mixed Precision Training:** Lowers memory usage while maintaining performance.
+  - **FSDP (Fully Sharded Data Parallelism):** Efficient distribution of training across multiple GPUs.
+  - **ZeRO (Zero Redundancy Optimizer):** Reduces memory footprint.
+  - **Mixed Precision Training:** Lowers memory usage while maintaining performance.
 - **Experiments and Measurements:**
-- **Training time comparison:** Single GPU vs. Multiple GPUs.
-- **Memory consumption analysis:** LoRA/qLoRA vs. Full fine-tuning.
-- **Effect of batch size and learning rate tuning** on model convergence.
+  - **Training time comparison:** Single GPU vs. Multiple GPUs.
+  - **Memory consumption analysis:** LoRA/qLoRA vs. Full fine-tuning.
+  - **Effect of batch size and learning rate tuning** on model convergence.
+---
 
-#### Model Serving and Monitoring Platforms (Unit 6 and Unit 7)
+##### **2. Model Training Infrastructure and Platform (Unit 5)**
 
-##### Model serving
+##### **2.1 Experiment Tracking**
+- **Tool:** **MLflow hosted on ChameleonCloud**.
+- **Logging Key Details:**
+  - Hyperparameters: Learning rate, batch size, optimizer type.
+  - Training loss, validation loss, and evaluation metrics.
+  - Model versioning and performance comparisons.
 
-###### Serving from an API Endpoint
-- **Component**: Webhook Listener API (FastAPI)
+##### **2.2 Scheduling Training Jobs**
+- **Tool:** **Ray Cluster** for job scheduling.
+- **Steps:**
+  1. Deploy a **Ray cluster** on ChameleonCloud.
+  2. Submit training jobs to Ray, allowing for **distributed execution**.
+  3. Automate retraining in the **CI/CD pipeline** to ensure periodic model updates.
 
-- Wraps the model pipeline, receives a GitHub PR event, and routes it through the inference flow
+##### **2.3 Ray Train for Fault-Tolerant Execution (Optional Difficulty)**
+- **Implementation:**
+  - Use **Ray Train** for checkpointing to remote storage.
+  - Enable **automatic recovery** from failures.
+  - Implement **adaptive batch sizing** based on available GPU memory.
+- **Expected Outcomes:**
+  - Reduced downtime in case of hardware failures.
+  - More efficient GPU utilization through dynamic workload distribution.
 
-- Dockerized and runs continuously to handle live GitHub PRs
+---
 
-###### Specific Inference Requirements (MVP Targets)
+#### *II. Model Serving and Monitoring Platforms*
+##### 3. Model Serving (Unit 6)
+##### 3.1 Serving from an API Endpoint
+- **Component**: Webhook Listener API (FastAPI)  
+  - Wraps the model pipeline, receives a GitHub PR event, and routes it through the inference flow  
+  - Dockerized and runs continuously to handle live GitHub PRs  
 
-- **Use Case**: Automatic review commenting on GitHub PRs
+##### 3.2 Specific Inference Requirements (MVP Targets)
+- **Use Case**: Automatic review commenting on GitHub PRs  
+- **Model Type**: Fine-tuned LLM using QLoRA  
+- **Model Size**: ~4.5 GB, enabling fast loading and inference on P100  
+- **Latency**: <= 5 seconds per PR  
+- **Throughput**: ~3–5 PRs per minute (with batching/dynamic batching)  
+- **Concurrency**: 2 PRs  
+- **Deployment**: FastAPI + Docker + P100 GPU  
+- **Backend Serving**: Triton or Ray Serve for autoscaling  
 
-- **Model Type**: Fine-tuned LLM using QLoRA
+##### 3.3 Optimizations
 
-- **Model Size**: ~4.5 GB, enabling fast loading and inference on P100
-
-- **Latency**: <= 5 seconds per PR
-
-- **Throughput**: ~3–5 PRs per minute (with batching/dynamic batching)
-
-- **Concurrency**: 2 PRs
-
-- **Deployment**: FastAPI + Docker + P100 GPU
-
-- **Backend Serving**: Triton or Ray Serve for autoscaling
-
-###### Optimizations
 - **Model-level**
+  - QLoRA – Quantization for efficient serving  
+  - Instruction tuning with domain-specific review comments  
 
-- QLoRA – Quantization for efficient serving
-
-- Instruction tuning with domain-specific review comments
-
- 
 - **System-level**
+  - Async request handling in FastAPI  
+  - Dynamic batching and concurrent model execution  
+    - Enabled via multiple GPU-backed model instances and dynamic batching in NVIDIA Triton to support high throughput and low latency inference  
+  - Dockerized deployment for portability and reproducibility  
 
-- Async request handling in FastAPI
 
-- Dynamic batching and concurrent model execution
+##### 3.4 Optional Difficulty Points
 
-- Enabled via multiple GPU-backed model instances and dynamic batching in NVIDIA Triton to support high throughput and low latency inference
+- **Serving Strategy Evaluation**  
+  - Compare model serving on server-grade GPU vs server-grade CPU using the same deployment setup. 
+  - Evaluate trade-offs in latency, throughput, and cost of deployment using commercial cloud infrastructure (e.g., Chameleon Cloud).
 
-- Dockerized deployment for portability and reproducibility
 
-  
 
 ---
 
-  
+##### 4. Monitoring & Evaluation (Unit 7)
 
-###### Optional Difficulty Points
-
-  
-
-- **Serving Strategy Evaluation**
-
-- Compare model serving on server-grade GPU vs server-grade CPU using the same deployment setup.
-
-- Evaluate trade-offs in latency, throughput, and cost of deployment using commercial cloud infrastructure (e.g., Chameleon Cloud).
----
-
-###### Offline Evaluation
-
+##### 4.1 Offline Evaluation
 After model training, we conduct automated offline evaluations:
 
-  
+- **General Metrics**: Overall accuracy (e.g., BERTScore/F1 for text) – logged via MLFlow  
+- **Bias & Fairness**: Performance on PR slices (e.g., small vs large PRs, bugfix vs feature PRs)  
+- **Known Failure Modes**: PRs with outdated diffs, high token count, or structurally similar examples that previously failed  
+- **Template-Based Tests**: Checking LLM predictions for identical PRs with different comment instructions  
+- **Test Suite**: Implemented using `pytest`, and integrated into the training pipeline  
+  - Based on results, models are automatically registered or discarded  
+- **Automated Model Registration**: Pass/fail logic in test suite decides model promotion  
 
-- **General Metrics**: Overall accuracy (e.g., BERTScore/F1 for text) – logged via MLFlow
+##### 4.2 Load Testing
+- Conducted in a staging environment using simulated GitHub PR events  
+- Operational metrics measured via Prometheus:  
+  - Latency, throughput, and error rates 
+- Observed under varied load patterns to validate FastAPI + Triton under concurrent requests  
+- Results visualized via Grafana dashboards  
 
-- **Bias & Fairness**: Performance on PR slices (e.g., small vs large PRs, bugfix vs feature PRs)
+##### 4.3 Online Evaluation via Canary
+- Online evaluation with artificial users (team members)  
+- Real-time observation of model responses on live PRs  
+- Monitoring model-specific metrics such as prediction confidence using Prometheus and Grafana  
 
-- **Known Failure Modes**: PRs with outdated diffs, high token count, or structurally similar examples that previously failed
+##### 4.4 Close the Loop
+- No user feedback is collected  
+- Monitoring drift using:  
+  - Drift events (`drift_events_total`)  
+  - Test statistic (`drift_test_stat`)  
+- Infrastructure and application-level health tracked through Prometheus + Grafana  
 
-- **Template-Based Tests**: Checking LLM predictions for identical PRs with different comment instructions
 
-- **Test Suite**: Implemented using `pytest`, and integrated into the training pipeline
+##### 4.5 Define a Business-Specific Evaluation
 
-- Based on results, models are automatically registered or discarded
+- **Location Awareness**  
+  - *Precision*: Of all the locations where the model generated comments, what fraction matched actual human comment locations in the test set?  
+  - *Recall*: Of all the human-generated comment locations in the test set, what fraction were identified by the model?  
 
-- **Automated Model Registration**: Pass/fail logic in test suite decides model promotion
-
-  
-
-###### Load Testing
-
-- Conducted in a staging environment using simulated GitHub PR events
-
-- Operational metrics measured via Prometheus:
-
-- Latency, throughput, and error rates
-
-- Observed under varied load patterns to validate FastAPI + Triton under concurrent requests
-
-- Results visualized via Grafana dashboards
-
-  
-
-###### Online Evaluation via Canary
-
-- Online evaluation with artificial users (team members)
-
-- Real-time observation of model responses on live PRs
-
-- Monitoring model-specific metrics such as prediction confidence using Prometheus and Grafana
-
-  
-
-###### Close the Loop
-
-- No user feedback is collected
-
-- Monitoring drift using:
-
-- Drift events (`drift_events_total`)
-
-- Test statistic (`drift_test_stat`)
-
-- Infrastructure and application-level health tracked through Prometheus + Grafana
-
-  
-
----
-
-  
-
-###### Define a Business-Specific Evaluation
-
-  
-
-- **Location Awareness**
-
-- *Precision*: Of all the locations where the model generated comments, what fraction matched actual human comment locations in the test set?
-
-- *Recall*: Of all the human-generated comment locations in the test set, what fraction were identified by the model?
-
-  
-
-- **Semantic Similarity**
-
-- *BERTScore*: Measures the similarity between model-generated comments and human comments using contextual embeddings from BERT. This captures semantic alignment beyond surface-level token overlap.
-
-  
+- **Semantic Similarity**  
+  - *BERTScore*: Measures the similarity between model-generated comments and human comments using contextual embeddings from BERT. This captures semantic alignment beyond surface-level token overlap.  
 
 These metrics serve as proxies for usefulness and alignment with human reviewers and will be computed on a held-out labeled test set.
 
-
-#### Continuous X
-  
-
-##### 1. Infrastructure-as-Code (IaC)
-
-  
+---
+#### *III. Continuous X*
+##### 5. DevOps (Unit 3)
+##### 5.1 Infrastructure-as-Code (IaC)
 
 To provision and manage infrastructure declaratively:
 
-  
-
 - **Terraform**: Define cloud infrastructure (compute, storage, networking).
-
 - **Ansible**: Automate service configuration and deployment.
-
 - **Kubernetes (K8s) with ArgoCD**: GitOps-based deployment.
-
 - **Version Control**: Store all Terraform, Ansible, and Kubernetes configurations in a Git repository.
 
-  
-
-###### **IaC Implementation Steps**
-
-1. Define Terraform modules for:
-
-- **Compute**: GPU/CPU nodes for model training & inference.
-
-- **Storage**: Persistent storage for datasets and models.
-
-- **Networking**: API Gateway, Load Balancer, VPC.
-
-2. Automate provisioning using Terraform (`terraform apply` from GitHub Actions).
-
-3. Use Ansible to install dependencies (e.g., MLFlow, FastAPI).
-
-4. ArgoCD watches Git repositories and auto-deploys services on Kubernetes.
-
-  
+IaC Implementation Steps:
+- Define Terraform modules for:
+   - **Compute**: GPU/CPU nodes for model training & inference.
+   - **Storage**: Persistent storage for datasets and models.
+   - **Networking**: API Gateway, Load Balancer, VPC.
+- Automate provisioning using Terraform (`terraform apply` from GitHub Actions).
+- Use Ansible to install dependencies (e.g., MLFlow, FastAPI).
+- ArgoCD watches Git repositories and auto-deploys services on Kubernetes.
 
 ---
 
-  
+##### 5.2 Cloud-Native Architecture
 
-##### 2. Cloud-Native Architecture
+To follow cloud-native principles of:
+- (a) Microservices
+- (b) Containers as the Smallest Compute Unit
+- (c) Immutable Infrastructure
 
-  
+##### **Cloud-Native Components**
 
-To follow cloud-native principles:
-
-  
-
-- **Microservices**
-
-- **Containers as the Smallest Compute Unit**
-
-- **Immutable Infrastructure**
-
-  
-
-###### **Cloud-Native Components**
-
-###### **GitHub API Scraper (Data Pipeline)**
-
+##### **GitHub API Scraper (Data Pipeline)**
 - Runs as a **Dockerized job** within Apache Airflow.
-
 - Stores scraped data in persistent storage (e.g., **MinIO**).
 
-  
-
-###### **Model Training and Experimentation**
-
+##### **Model Training and Experimentation**
 - Uses **MLFlow** for hyperparameter tuning and tracking.
-
 - Runs **PEFT-based fine-tuning** on GPUs.
-
 - Saves models to object storage.
 
-  
-
-###### **Inference & Model Serving**
-
+##### **Inference & Model Serving**
 - Uses **FastAPI** as an inference endpoint.
-
 - Runs the fine-tuned **LLM (TGI)** in a containerized GPU pod.
 
-  
-
-###### **Automated ML Pipeline**
-
+##### **Automated ML Pipeline**
 - Triggers training based on **new data** or **schedule**.
-
 - Automates **hyperparameter tuning and evaluation**.
 
-  
 
 ---
 
-  
-
-##### 3. CI/CD & Continuous Training
-
-  
+##### 5.3 CI/CD & Continuous Training
 
 To automate model updates and deployments:
 
-  
-
 - **GitHub Actions**
-
 - **Argo Workflows**
-
 - **Kubernetes Jobs**
 
-  
-
-###### **Trigger Points**
-
+##### **Trigger Points**
 - **New PR in GitHub** → Triggers inference pipeline.
-
 - **New dataset** → Triggers re-training.
-
 - **Scheduled Training** → Runs model updates periodically.
 
-  
-
-### **CI/CD Pipeline**
-
-- Lints Python code, Dockerfiles, Terraform.
-
-- Runs unit tests (**pytest**) on ML components.
-
-- Builds Docker images (`docker build`).
-
-- Detects data changes.
-
-- Runs training and evaluation in **Argo Workflows**.
-
-- Stores the model in **MLFlow**.
-
-- Packages model inside a **TGI container**.
-
-- Deploys to **staging** using ArgoCD.
-
-  
+##### **CI/CD Pipeline**
+   - Lints Python code, Dockerfiles, Terraform.
+   - Runs unit tests (**pytest**) on ML components.
+   - Builds Docker images (`docker build`).
+   - Detects data changes.
+   - Runs training and evaluation in **Argo Workflows**.
+   - Stores the model in **MLFlow**.
+   - Packages model inside a **TGI container**.
+   - Deploys to **staging** using ArgoCD.
 
 ---
 
-  
-
-##### 4. Staged Deployment (Staging, Canary, Production)
-
-  
+##### 5.4 Staged Deployment (Staging, Canary, Production)
 
 To safely release model updates:
 
-  
-
-###### **Deployment Strategy**
-
+##### **Deployment Strategy**
 - **Staging**: Runs in a separate namespace.
-
 - **Canary Deployment**: Gradually increases traffic to the new model.
-
 - **Production Rollout**: Fully replaces the old model if canary tests pass.
 
-  
-
-###### **Staged Deployment Steps**
-
-- ArgoCD auto-deploys new model versions.
-
-- Check **API responses, latency, accuracy**.
-
-- Split traffic **90/10 (old/new)**.
-
-- Use **Prometheus & Grafana** for observability.
-
-- Roll out to 100% if no issues are detected.
+##### **Staged Deployment Steps**
+   - ArgoCD auto-deploys new model versions.
+   - Check **API responses, latency, accuracy**.
+   - Split traffic **90/10 (old/new)**.
+   - Use **Prometheus & Grafana** for observability.
+   - Roll out to 100% if no issues are detected.
 
 
-
-#### Data pipeline
