@@ -35,11 +35,11 @@ Metric to be judged on:
 
 | Name               | Responsible for                                              | Link to their commits in this repo |
 |--------------------|--------------------------------------------------------------|------------------------------------|
-| All team members   | DevOps, Overall design of ML System, Value Proposition, Decisions around Content Extraction at Inference, Custom dataset, Model selection, UI/UX of the bot |                                    |
-| Nidhi Donuru       | Model Serving  |     https://github.com/BugBeak/MLOps/commits/main/?author=nidhiid                                         |                                    |
-| Riya Patil         | Model Training and Experimentation    | https://github.com/BugBeak/MLOps/commits/main/?author=Riyap30                    |                                    |
-| Khushi Sharma      | Evaluation and Monitoring  | https://github.com/BugBeak/MLOps/commits/main/?author=BugBeak                               |                                    |
-| Rishabh Budhouliya | Data Pipeline   | https://github.com/BugBeak/MLOps/commits/main/?author=rishabhBudhouliya   
+| All team members   | Overall design of ML System, Value Proposition, Decisions around Content Extraction at Inference, Custom dataset, Model selection, UI/UX of the bot, Extra difficulty components |                                    |
+|  Nidhi Donuru     | Model Serving & Monitoring                                              |    https://github.com/BugBeak/MLOps/commits/main/?author=nidhiid                                |
+| Khushi Sharma      | Model Training and Experimentation                           |          https://github.com/BugBeak/MLOps/commits/main/?author=BugBeak                            |
+|Rishabh Budhouliya       | Data Pipeline                                       |    https://github.com/BugBeak/MLOps/commits/main/?author=rishabhBudhouliya                                 |
+|   Riya Patil       | Continuous X Pipeline                                                |      https://github.com/BugBeak/MLOps/commits/main/?author=Riyap30                |               |
 
 ---
 ### System Diagram
