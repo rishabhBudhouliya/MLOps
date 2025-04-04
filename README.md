@@ -104,7 +104,7 @@ Design Plan
 3. Model Training and Experimentation
    1. Strategy: 
       1. Initial Fine-tuning: Perform initial QLoRA fine-tuning of Code Llama 7B/13B on the static, processed 50k dataset.
-      2. Retraining Pipeline: Integrate data collection (from feedback loop/new sources) and fine-tuning into the CI/CD pipeline, allowing scheduled or triggered retraining runs. Version model artifacts.
+      2. Retraining Pipeline: Integrate data collection (from new sources) and fine-tuning into the CI/CD pipeline, allowing scheduled or triggered retraining runs. Version model artifacts.
       3. Documentation: Rigorously document base model choice rationale (Code Llama's strengths), PEFT justification, prompt engineering attempts, and context injection methods (how code context, file context, PR description are fed to the model).
       4. Training Strategies: Implement mixed-precision training (BF16/FP16 via libraries like accelerate or transformers) and gradient accumulation to effectively increase batch size and stabilize training, especially with limited VRAM. We shall document experiments showing efficiency gains (throughput, memory usage).
    2. Justification: We require initial fine tuning to establish a baseline model. Furthermore, we would to apply multiple training strategies to leverage the existing resources optimally and potentially reduce the time to conduct an experiment.
