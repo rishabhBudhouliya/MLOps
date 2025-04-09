@@ -1,0 +1,7 @@
+repositories:
+  - "octocat/Hello-World"
+  - "psf/requests"
+
+output_dir: "./data"
+env_path: ".env"
+
