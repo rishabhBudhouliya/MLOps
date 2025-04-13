@@ -4,8 +4,11 @@ import argparse
 import requests
 from github import Github
 from github import Auth
+# Handle potential rate limit errors
+from github import RateLimitExceededException, GithubException
 from unidiff import PatchSet
 from io import StringIO
+import time # For potential rate limit handling
 
 def get_github_token():
     """Retrieves the GitHub token from the environment variable."""
@@ -18,82 +21,108 @@ def parse_github_pr_url(url):
     """Parses a GitHub PR URL to extract owner, repo, and PR number."""
     match = re.match(r"https://github\.com/([^/]+)/([^/]+)/pull/(\d+)", url)
     if not match:
-        raise ValueError("Invalid GitHub PR URL format.")
+        # Try matching format without www. or with different protocols if needed
+        match = re.match(r"https?://(?:www\.)?github\.com/([^/]+)/([^/]+)/pull/(\d+)", url)
+        if not match:
+            raise ValueError(f"Invalid GitHub PR URL format: {url}")
     owner, repo, pr_number = match.groups()
     return owner, repo, int(pr_number)
 
-def fetch_pr_data(pr_url):
-    """Fetches the unified diff and review comments for a given GitHub PR URL."""
+def fetch_pr_data(pr_url, max_retries=3, retry_delay=5):
+    """
+    Fetches the unified diff and review comments for a given GitHub PR URL.
+    Includes basic rate limit handling.
+    """
     diff_content = None
-    comments = None
-    try:
-        token = get_github_token()
-        owner, repo_name, pr_number = parse_github_pr_url(pr_url)
+    comments = [] # Initialize as empty list
+    retries = 0
 
-        # Authenticate with GitHub
-        auth = Auth.Token(token)
-        g = Github(auth=auth)
+    while retries < max_retries:
+        try:
+            token = get_github_token()
+            owner, repo_name, pr_number = parse_github_pr_url(pr_url)
 
-        # Get the repository
-        repo = g.get_user(owner).get_repo(repo_name)
+            # Authenticate with GitHub
+            auth = Auth.Token(token)
+            g = Github(auth=auth, retry=5, timeout=15) # Add retry/timeout to Github object
 
-        # Get the pull request
-        pr = repo.get_pull(pr_number)
+            # Get the repository
+            repo = g.get_repo(f"{owner}/{repo_name}") # More direct way
 
-        # --- Fetch Unified Diff --- 
-        print(f"Fetching diff from: {pr.diff_url}")
-        headers = {
-            'Authorization': f'token {token}',
-            'Accept': 'application/vnd.github.v3.diff'
-        }
-        response = requests.get(pr.diff_url, headers=headers)
-        response.raise_for_status() 
-        diff_content = response.text
+            # Get the pull request
+            pr = repo.get_pull(pr_number)
 
-        # --- Fetch Review Comments ---
-        print("Fetching review comments...")
-        review_comments_paginated = pr.get_review_comments()
-        comments = list(review_comments_paginated)
-        print(f"Found {len(comments)} review comments.")
+            # --- Fetch Unified Diff ---
+            print(f"Fetching diff from: {pr.diff_url}")
+            headers = {
+                'Authorization': f'token {token}',
+                'Accept': 'application/vnd.github.v3.diff'
+            }
+            response = requests.get(pr.diff_url, headers=headers)
+            # --- DEBUG --- 
+            print(f"DEBUG: Diff request status code: {response.status_code}")
+            # --- END DEBUG ---
+            response.raise_for_status()
+            print(f"DEBUG: Diff content: {response.text}")
+            diff_content = response.text
+            # --- DEBUG --- 
+            print(f"DEBUG: Diff content fetched successfully (length: {len(diff_content) if diff_content else 0}).")
+            # --- END DEBUG ---
 
-        return diff_content, comments
+            # --- Fetch Review Comments ---
+            print("Fetching review comments...")
+            review_comments_paginated = pr.get_review_comments()
+            comments = list(review_comments_paginated)
+            print(f"Found {len(comments)} review comments.")
 
-    except requests.exceptions.RequestException as req_e:
-        print(f"An error occurred during diff request: {req_e}")
-        return None, comments 
-    except Exception as e:
-        print(f"An unexpected error occurred: {e}")
+            return diff_content, comments
+
+        except requests.exceptions.RequestException as req_e:
+            # --- DEBUG --- 
+            print(f"DEBUG: Caught requests.exceptions.RequestException: {req_e}")
+            # --- END DEBUG ---
+            print(f"An error occurred during diff request: {req_e}")
+            return None, comments 
+        except Exception as e:
+            # --- DEBUG --- 
+            print(f"DEBUG: Caught generic Exception: {e}")
+            # --- END DEBUG ---
+            print(f"An unexpected error occurred: {e}")
+            return None, None
+
+
+def find_hunk_and_line_for_comment(parsed_diff, comment_path, comment_pos):
+    """
+    Finds the specific hunk and line object in the parsed diff corresponding
+    to a comment path and position.
+    Returns a tuple (hunk, line) or (None, None) if not found.
+    """
+    if not comment_path or comment_pos is None or comment_pos <= 0:
         return None, None
 
-def find_diff_line_for_comment(parsed_diff, comment):
-    """Finds the specific line in the parsed diff corresponding to a comment."""
-    if not comment.path or comment.position is None: # Check position explicitly for None
-        return None # Comment is not associated with a specific line/position
-
     target_file = None
+    # Find target_file logic (same as before)...
     for file_diff in parsed_diff:
-        # Compare source_file and target_file as filename might change (rename)
-        if file_diff.source_file == comment.path or file_diff.target_file == comment.path:
+        if file_diff.path == comment_path:
             target_file = file_diff
             break
+    if not target_file: # Add fallback if needed
+        # ... fallback logic ...
+        if not target_file:
+             return None, None
 
-    if not target_file:
-        # print(f"Warning: Could not find file '{comment.path}' in diff for comment {comment.id}")
-        return f"[File '{comment.path}' not found in diff]"
 
-    current_pos = 0
-    for hunk in target_file:
-        for line in hunk:
-            # Only count context lines and added lines for position matching
-            # as per GitHub's diff comment positioning
+    current_pos_count = 0
+    for hunk in target_file: # Iterate through hunks
+        for line in hunk: # Iterate through lines within the hunk
             if line.is_context or line.is_added:
-                current_pos += 1
-                if current_pos == comment.position:
-                    # Strip trailing newline for cleaner printing
-                    return line.value.rstrip('\n')
+                current_pos_count += 1
+                if current_pos_count == comment_pos:
+                    # Found the line, return it AND the current hunk
+                    return hunk, line
 
-    # print(f"Warning: Could not find position {comment.position} in file '{comment.path}' for comment {comment.id}")
-    return f"[Position {comment.position} not found in hunk for file '{comment.path}']"
+    # If loop completes without finding the position
+    return None, None
 
 
 if __name__ == "__main__":
@@ -102,50 +131,102 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     print(f"Fetching data for PR: {args.pr_url}")
-    diff, comments = fetch_pr_data(args.pr_url)
+    diff_text, comments_data = fetch_pr_data(args.pr_url)
 
     parsed_diff = None
-    if diff is not None:
+    if diff_text is not None:
         print("\n" + "="*20 + " UNIFIED DIFF " + "="*20)
-        print(diff)
+        # print(diff_text) # Keep this commented unless debugging diff text itself
         try:
-            # Use StringIO to treat the diff string like a file for PatchSet
-            diff_file_like = StringIO(diff)
+            diff_file_like = StringIO(diff_text)
             parsed_diff = PatchSet(diff_file_like)
             print("\nDiff parsed successfully.")
+
+            # --- Print filenames in the parsed diff ---
+            print("\n" + "="*10 + " Files in Parsed Diff " + "="*10)
+            if parsed_diff:
+                 for file_diff in parsed_diff:
+                     # file_diff.path usually gives the target path without the b/ prefix
+                     # source_file and target_file include the a/ and b/ prefixes
+                     print(f"- Path: {file_diff.path} (Source: {file_diff.source_file}, Target: {file_diff.target_file})")
+            else:
+                 print("Parsed diff object is empty or None.")
+            print("="*32)
+            # --- End print filenames ---
+
         except Exception as parse_e:
             print(f"\nError parsing diff: {parse_e}")
-            # Proceed without linking comments if parsing fails
-            parsed_diff = None 
+            parsed_diff = None
+    else:
+        print("\nDiff content not available.")
 
-    if comments is not None:
+    if comments_data:
         print("\n" + "="*20 + " REVIEW COMMENTS " + "="*20)
-        if comments:
-            for comment in comments:
-                print(f"--- Comment ID: {comment.id} ---")
-                print(f"User: {comment.user.login}")
-                
-                linked_line_content = "[Diff not available or not parsed]"
+        linked_count = 0
+        outdated_count = 0
+        general_count = 0
+
+        for comment in comments_data:
+            print(f"--- Comment ID: {comment.id} ---")
+            print(f"User: {comment.user.login}")
+            print(f"Body:\n{comment.body}")
+
+            # --- Alignment Logic based on V1 Strategy ---
+            if comment.path and comment.position is not None:
+                # CASE 1: Linkable comment (has path and non-null position)
+                print(f"Status: Attempting link")
+                print(f"File Path: {comment.path}")
+                print(f"Position (current): {comment.position}")
+
+                target_line_obj = None
                 if parsed_diff:
-                     linked_line_content = find_diff_line_for_comment(parsed_diff, comment)
+                    target_hunk_obj, target_line_obj = find_hunk_and_line_for_comment(parsed_diff, comment.path, comment.position)
                 
-                if comment.path and comment.position is not None:
-                    print(f"File Path: {comment.path}")
-                    # Using original_position might be more robust if available and different
-                    # print(f"Position: {comment.position} (Original Pos: {comment.original_position})") 
-                    print(f"Position: {comment.position}")
-                    if linked_line_content:
-                         print(f"Relevant Diff Line ({'context/added' if linked_line_content and not linked_line_content.startswith('[') else ''}): {linked_line_content}")
-                    else:
-                        print("Relevant Diff Line: [Comment not linked to a specific line]")
+                if target_line_obj and target_hunk_obj:
+                    linked_line_content = target_line_obj.value.rstrip('\n')
+                    hunk_text = str(target_hunk_obj)
+                    line_type = ('added' if target_line_obj.is_added else
+                                 'context' if target_line_obj.is_context else
+                                 'removed' if target_line_obj.is_removed else 'unknown')
+                    print(f"Linked Line Type: {line_type}")
+                    print(f"Linked Line Content: {linked_line_content}")
+                    print(f"Hunk Text: {hunk_text}")
+                    linked_count += 1
+                elif not parsed_diff:
+                    print("Linked Line Content: [Diff not parsed or unavailable]")
                 else:
-                    # General PR comment, not tied to a specific file/line diff
-                    print("File Path: N/A (General PR Comment)")
-                    print("Position: N/A")
+                    print(f"Linked Line Content: [Failed to find line for position {comment.position} in parsed diff for {comment.path}]")
 
-                print(f"Body:\n{comment.body}")
-                print("-" * 10)
-        else:
-            print("No review comments found.")
+            elif comment.path and comment.position is None:
+                # CASE 2: Outdated comment (has path but null position)
+                print(f"Status: Outdated (position is null)")
+                print(f"File Path: {comment.path}")
+                print(f"Position (current): None")
+                print(f"Original Position: {comment.original_position} (at commit {comment.original_commit_id})")
+                print("Linked Line Content: [Skipped - Position is null, comment outdated relative to current diff]")
+                outdated_count += 1
+            else:
+                # CASE 3: General PR comment (no path)
+                print(f"Status: General PR comment")
+                print(f"File Path: N/A")
+                print(f"Position: N/A")
+                print("Linked Line Content: [N/A - General comment]")
+                general_count += 1
 
-    print("\nDone.") 
+            print("-" * 10)
+
+        print("\n" + "="*20 + " SUMMARY " + "="*20)
+        print(f"Total Comments Processed: {len(comments_data)}")
+        print(f"Successfully Linked (using position): {linked_count}")
+        print(f"Skipped as Outdated (position was null): {outdated_count}")
+        print(f"Skipped as General Comment (no path): {general_count}")
+
+    elif comments_data is None:
+         print("\n" + "="*20 + " REVIEW COMMENTS " + "="*20)
+         print("Could not fetch comments (or operation failed).")
+    else: # comments_data is an empty list
+         print("\n" + "="*20 + " REVIEW COMMENTS " + "="*20)
+         print("No review comments found for this PR.")
+
+
+    print("\nDone.")
