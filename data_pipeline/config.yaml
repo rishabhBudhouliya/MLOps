@@ -1,9 +1,6 @@
 # config.yaml
 github_repositories:
-  - "owner1/repoA"
-  # - "numpy/numpy" # Example public repo
-  # - "some-org/another-project"
-  - "your-org/your-main-project"
+  - "jenkinsci/git-client-plugin"
 
 # Other config...
 data_paths:
@@ -16,4 +13,3 @@ rclone_remote_name: "chameleon_s3" # Name of your rclone remote configured with 
 filters:
   min_comments: 3 # Minimum number of review comments a PR must have
   state: "merged" # Fetch PRs with this state ("open", "closed", "merged", "all")
-  # since_date: "2022-01-01T00:00:00Z" # Optional: Only PRs created/updated after this date (ISO 8601 format) 
