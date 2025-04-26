@@ -288,24 +288,29 @@ def main():
         print("Error: rclone is not installed or not accessible. Please install rclone or use --local mode.", file=sys.stderr)
         sys.exit(1)
 
-    # --- Download Log File ---    
+    # --- Download Log File ---
     # Use a temporary file for download, then potentially copy to final log output path
     temp_download_log_path = None
     try:
         with tempfile.NamedTemporaryFile(mode='w', delete=False, prefix="processed_dl_", suffix=".log") as temp_log_file:
             temp_download_log_path = temp_log_file.name
-        
+
         if not args.local:
-            print(f"Attempting to download processed PR log to temporary file: {temp_download_log_path}")
-            success, rclone_stderr = run_rclone_command(['copy', remote_log_path, temp_download_log_path], suppress_output=True)
-            if success and "Source file not found" in rclone_stderr:
-                 print("Note: Remote log file not found (this might be expected on first run).")
-                 open(temp_download_log_path, 'w').close() 
-            elif not success:
-                 print(f"Warning: Failed to download {remote_log_path}. Proceeding as if no PRs processed.", file=sys.stderr)
-                 open(temp_download_log_path, 'w').close()
+            print(f"Attempting to download processed PR log from {remote_log_path} to temporary file: {temp_download_log_path}")
+            # Use copyto instead of copy for single file download
+            success, rclone_stderr = run_rclone_command(['copyto', remote_log_path, temp_download_log_path], suppress_output=True)
+
+            # Check for download failure reasons (less critical now with copyto, but good practice)
+            if not success:
+                # 'copyto' should handle 'not found' correctly (exit code 3 filtered in run_rclone_command)
+                # So any failure here is likely a real issue (network, permissions, etc.)
+                print(f"Warning: Failed to download {remote_log_path} using 'copyto'. Rclone stderr: {rclone_stderr}. Proceeding as if no PRs processed.", file=sys.stderr)
+                # Ensure empty file exists as a fallback
+                open(temp_download_log_path, 'w').close()
+
         else:
             print("Running in local mode, skipping rclone download.")
+            # Ensure the temp file exists even in local mode if it wasn't created
             if not os.path.exists(temp_download_log_path):
                  open(temp_download_log_path, 'w').close()
                  print(f"Created empty local log file: {temp_download_log_path}")

@@ -1,0 +1,56 @@
+version: '3.8'
+
+services:
+  pipeline:
+    build: . # Build the image from the Dockerfile in the current directory
+    container_name: data-pipeline-service
+    environment:
+      # Pass the GitHub token from the host environment into the container
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      # You can add other necessary environment variables here
+    volumes:
+      # Mount the config file (read-only is safer)
+      - ./config.yaml:/app/config.yaml:ro
+      # Mount the rclone configuration from your host machine (read-only)
+      # IMPORTANT: This makes your rclone credentials accessible to the container.
+      # Use with caution, especially in shared environments.
+      - ~/.config/rclone:/root/.config/rclone:ro
+      # Mount directories for intermediate files and potential local output
+      - ./pipeline_intermediate:/app/pipeline_intermediate
+      - ./pipeline_output_raw:/app/pipeline_output_raw
+    # Define named commands for different ways to run the scripts
+    # Note: These aren't true "stages" in the sense of data flow yet,
+    #       as the Python scripts handle the orchestration internally.
+    #       'run-full-pipeline' is the main command.
+    command: ["sleep", "infinity"] # Default command keeps container alive if needed, override with 'run'
+
+# Example named commands to run specific actions using 'docker compose run':
+#
+# 1. Run the entire pipeline (orchestrated by run_pipeline.py):
+#    docker compose run --rm pipeline run-full-pipeline [--local] [--debug]
+#
+# 2. Run only the discovery step (for debugging):
+#    docker compose run --rm pipeline run-discover [--local] [--debug]
+#
+# 3. Run only the fetcher step (for debugging, needs output from discover):
+#    docker compose run --rm pipeline run-fetcher [--local] [--debug]
+
+x-pipeline-commands: &pipeline-commands
+  run-full-pipeline: >
+    python run_pipeline.py
+    --config /app/config.yaml
+    --intermediate-dir /app/pipeline_intermediate
+    --local-raw-output-dir /app/pipeline_output_raw
+  run-discover: >
+    python discover_new_prs.py
+    --config /app/config.yaml
+    --output-file /app/pipeline_intermediate/new_prs_to_process.txt
+    --no-upload
+    --log-output-path /app/pipeline_intermediate/updated_processed_prs.log
+  run-fetcher: >
+    python github_pr_fetcher.py
+    --config /app/config.yaml
+    --input-pr-list /app/pipeline_intermediate/new_prs_to_process.txt
+    # Add --local-output-dir if you intend fetcher to save locally INSIDE the container context
+    # This requires coordination with how you call it. For local host output, use run-full-pipeline --local
+    # --local-output-dir /app/pipeline_output_raw 
