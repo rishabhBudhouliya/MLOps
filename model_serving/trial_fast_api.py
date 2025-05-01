@@ -21,8 +21,6 @@ async def generate_review(
     guidelines_file: UploadFile = File(...),
     max_new_tokens: int = 300
     ):
-    print("in here")
-    return
     diff = (await diff_file.read()).decode("utf-8")
     guidelines = (await guidelines_file.read()).decode("utf-8")
 

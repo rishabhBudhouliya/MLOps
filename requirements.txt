@@ -1,1 +1,5 @@
-pip install fastapi uvicorn transformers
+fastapi
+uvicorn
+transformers
+torch
+prometheus-client
