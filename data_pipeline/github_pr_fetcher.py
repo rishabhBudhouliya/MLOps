@@ -12,6 +12,7 @@ import tempfile
 from github import Github, Auth, RateLimitExceededException, GithubException
 from unidiff import PatchSet
 from io import StringIO
+import datetime
 
 def get_github_token():
     """Retrieves the GitHub token from the environment variable."""
@@ -42,40 +43,6 @@ def load_config(config_path):
     except ValueError as e:
         print(f"Error in config file structure: {e}", file=sys.stderr)
         sys.exit(1)
-
-def run_rclone_command(args, suppress_output=False, max_retries=3, retry_delay=5):
-    """Runs an rclone command with retry logic for network issues."""
-    command = ['rclone'] + args
-    print(f"Running command: {' '.join(command)}")
-    
-    for attempt in range(max_retries):
-        try:
-            process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            stdout, stderr = process.communicate()
-            if process.returncode != 0:
-                 # Don't ignore errors here, upload failure is usually critical
-                 if attempt < max_retries - 1:
-                     print(f"Attempt {attempt + 1} failed. Retrying in {retry_delay} seconds...")
-                     time.sleep(retry_delay)
-                     continue
-                 print(f"Error running rclone command: {' '.join(command)}", file=sys.stderr)
-                 print(f"Return Code: {process.returncode}", file=sys.stderr)
-                 print(f"Stderr: {stderr}", file=sys.stderr)
-                 return False, stderr
-            else:
-                if not suppress_output and stdout:
-                    print(f"Rclone stdout: {stdout}")
-                if stderr:
-                    print(f"Rclone stderr: {stderr}")
-                return True, stderr
-        except Exception as e:
-            if attempt < max_retries - 1:
-                print(f"Attempt {attempt + 1} failed with error: {e}. Retrying in {retry_delay} seconds...")
-                time.sleep(retry_delay)
-                continue
-            print(f"An unexpected error occurred while running rclone: {e}", file=sys.stderr)
-            return False, str(e)
-    return False, "Max retries exceeded for rclone command"
 
 def parse_github_pr_url(url):
     """Parses a GitHub PR URL to extract owner, repo, and PR number."""
@@ -205,30 +172,24 @@ def find_hunk_and_line_for_comment(parsed_diff, comment_path, comment_pos):
     return None, None
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Fetch GitHub PR diff and comments, save raw data, and upload to remote storage.")
+    parser = argparse.ArgumentParser(description="Fetch GitHub PR diff and comments and save raw data locally.")
     parser.add_argument("--config", required=True, help="Path to the YAML configuration file.")
     parser.add_argument("--input-pr-list", required=True, help="Path to a text file containing PR URLs to process, one URL per line.")
     parser.add_argument("--debug", action="store_true", help="Enable debug mode with more verbose output")
-    parser.add_argument("--local-output-dir", default=None, help="If specified, save raw files locally to this directory instead of uploading to remote.")
+    parser.add_argument("--local-output-dir", required=True, help="Directory to save the raw diff and comment files locally.")
     args = parser.parse_args()
 
-    # --- Load Config --- 
-    config = load_config(args.config)
-    rclone_remote = config['rclone_remote_name']
-    # Ensure raw_data path ends with a slash for correct joining
-    raw_data_base_path = Path(config['data_paths']['raw']).as_posix().strip('/') + '/'
-    
-    # --- Determine Output Mode --- 
-    save_locally = args.local_output_dir is not None
-    local_output_path = None
-    if save_locally:
-        local_output_path = Path(args.local_output_dir)
-        local_output_path.mkdir(parents=True, exist_ok=True)
-        print(f"Local output mode enabled. Saving raw files to: {local_output_path}")
-    else:
-        print("Remote upload mode enabled.")
-        
-    # --- Read PR List --- 
+    # --- Load Config ---
+    config = load_config(args.config) # Keep load_config for basic validation
+
+    # --- Setup local output directory ---
+    local_output_path = Path(args.local_output_dir)
+    local_output_path.mkdir(parents=True, exist_ok=True)
+    print(f"Ensured local output directory exists: {local_output_path}")
+    # save_locally flag is removed, it's always true now.
+    # Remote upload mode print removed.
+
+    # --- Read PR List ---
     pr_urls_to_process = []
     try:
         with open(args.input_pr_list, 'r') as f:
@@ -261,17 +222,16 @@ if __name__ == "__main__":
         print(f"Error initializing GitHub client: {e}", file=sys.stderr)
         sys.exit(1)
 
-    # --- Processing Loop --- 
+    # --- Processing Loop ---
     success_count = 0
     failure_count = 0
-    
-    # Use a temporary directory only if uploading remotely
-    temp_dir_context = tempfile.TemporaryDirectory(prefix="raw_pr_data_") if not save_locally else None
-    
+
+    # --- EDIT: Removed temp directory logic ---
+    # We write directly to the specified local_output_path
+
     try:
-        base_output_dir = local_output_path if save_locally else Path(temp_dir_context.__enter__()) # type: ignore
-        if not save_locally:
-             print(f"Using temporary directory for local files: {base_output_dir}")
+        # --- EDIT: Use local_output_path directly ---
+        base_output_dir = local_output_path
 
         for pr_url in pr_urls_to_process:
             print("-"*40)
@@ -281,79 +241,69 @@ if __name__ == "__main__":
             try:
                 owner, repo_name, pr_number = parse_github_pr_url(pr_url)
                 file_basename = f"{owner}_{repo_name}_{pr_number}"
-                
+
                 # Define local paths within the base output directory
                 # Create owner/repo subdirs for better organization
                 pr_output_dir = base_output_dir / owner / repo_name
                 pr_output_dir.mkdir(parents=True, exist_ok=True)
                 local_diff_path = pr_output_dir / f"{file_basename}.diff"
                 local_comments_path = pr_output_dir / f"{file_basename}_comments.jsonl"
-                
+
                 # Fetch data
-                diff_text, comments_list, error_msg = fetch_pr_data(g, pr_url)
-                
-                if error_msg:
-                    print(f"Failed to fetch data for {pr_url}: {error_msg}")
-                    raise Exception(error_msg) # Treat fetch failure as exception for this PR
-                
-                # Save locally
+                # Add rate limit handling around the fetch call
+                while True:
+                    try:
+                        diff_text, comments_list, error_msg = fetch_pr_data(g, pr_url)
+                        if error_msg:
+                             # If fetch_pr_data handled rate limit internally and suggests retry, it might return a specific error
+                             # For now, assume any error_msg means failure for this PR here.
+                             raise Exception(error_msg)
+                        break # Success
+                    except RateLimitExceededException as rlee:
+                        reset_time = g.get_rate_limit().core.reset
+                        wait_seconds = max((reset_time - datetime.datetime.now(datetime.timezone.utc)).total_seconds() + 10, 15) # Wait until reset + buffer
+                        print(f"Rate limit hit. Waiting for {wait_seconds:.0f} seconds until {reset_time}...")
+                        time.sleep(wait_seconds)
+                        # Retry the fetch
+                    except GithubException as ge:
+                         # Handle other GitHub errors (e.g., 404 Not Found, 50x Server Error)
+                         print(f"GitHub API error for {pr_url}: {ge}. Skipping PR.", file=sys.stderr)
+                         raise # Re-raise to be caught by the outer loop's exception handler
+
+                # --- EDIT: Simplified saving, removed upload ---
+                # Save locally (mandatory now)
                 print(f"Saving diff locally to {local_diff_path}")
-                with open(local_diff_path, 'w') as f_diff:
+                with open(local_diff_path, 'w', encoding='utf-8') as f_diff:
                     f_diff.write(diff_text)
-                
+
                 print(f"Saving comments locally to {local_comments_path}")
                 if not save_comments_to_jsonl(comments_list, local_comments_path):
                      raise Exception(f"Failed to save comments locally for {pr_url}")
 
-                # Upload to remote ONLY if not in local output mode
-                if not save_locally:
-                    # Construct remote paths carefully
-                    remote_pr_path = f"{raw_data_base_path}{owner}/{repo_name}/"
-                    remote_diff_path = f"{rclone_remote}:{remote_pr_path}{file_basename}.diff"
-                    remote_comments_path = f"{rclone_remote}:{remote_pr_path}{file_basename}_comments.jsonl"
-                    
-                    print(f"Uploading diff to {remote_diff_path}")
-                    diff_upload_ok, _ = run_rclone_command(['copyto', str(local_diff_path), remote_diff_path], suppress_output=not args.debug)
-                    
-                    print(f"Uploading comments to {remote_comments_path}")
-                    comments_upload_ok, _ = run_rclone_command(['copyto', str(local_comments_path), remote_comments_path], suppress_output=not args.debug)
+                # --- EDIT: Removed rclone upload block ---
 
-                    if not (diff_upload_ok and comments_upload_ok):
-                         raise Exception(f"Failed to upload one or both files for {pr_url}")
-                    
                 print(f"Successfully processed PR: {pr_url}")
                 pr_processed_successfully = True
 
             except ValueError as ve:
-                # Error parsing URL from the input list itself
                 print(f"Skipping invalid URL from input list: {pr_url} - {ve}", file=sys.stderr)
             except Exception as pr_e:
-                # Catch errors specific to processing this PR
                 print(f"Error processing PR {pr_url}: {pr_e}", file=sys.stderr)
-                # If saving locally, keep potentially partial files for debugging? Or delete?
-                # Let's keep them for now if local_output_dir is set.
-                # If using temp dir, they'll be cleaned up anyway.
-                
+                # Keep partially created local files for debugging when an error occurs
+
             finally:
                  if pr_processed_successfully:
                      success_count += 1
                  else:
                      failure_count += 1
-                 # Clean up individual temp files ONLY if using temp dir (upload mode)
-                 if not save_locally:
-                     if local_diff_path and local_diff_path.exists():
-                          try: local_diff_path.unlink() 
-                          except OSError: pass # Ignore cleanup error
-                     if local_comments_path and local_comments_path.exists():
-                          try: local_comments_path.unlink()
-                          except OSError: pass # Ignore cleanup error
-    
+                 # --- EDIT: Removed individual file cleanup ---
+                 # We are not using a temp dir, keep files in the output dir
+
     finally:
-         # Exit the temporary directory context manager if it was created
-         if temp_dir_context:
-              temp_dir_context.__exit__(None, None, None)
-              
-    # --- Summary --- 
+        # --- EDIT: Removed temp_dir_context exit ---
+        pass # No temp dir context manager anymore
+
+    # --- Summary ---
     print("="*40)
     print("Processing Summary:")
     print(f"  Total PRs attempted: {len(pr_urls_to_process)}")
