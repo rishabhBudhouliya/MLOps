@@ -16,8 +16,11 @@ def load_config(config_path):
         # Basic validation (add checks needed by orchestrator)
         if not config:
             raise ValueError("Config file is empty.")
-        if 'data_paths' not in config or 'metadata' not in config['data_paths']:
-             raise ValueError("Missing 'data_paths.metadata' in config.")
+        if 'data_paths' not in config or \
+           'metadata' not in config['data_paths'] or \
+           'raw' not in config['data_paths'] or \
+           'processed' not in config['data_paths']:
+             raise ValueError("Missing one or more required keys in 'data_paths' (metadata, raw, processed).")
         if 'rclone_remote_name' not in config or not config['rclone_remote_name']:
             raise ValueError("Missing or empty 'rclone_remote_name' in config.")
         return config
@@ -92,10 +95,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Orchestrate the GitHub PR data pipeline.")
     parser.add_argument("--config", default="config.yaml", help="Path to the YAML configuration file.")
     parser.add_argument("--debug", action="store_true", help="Enable debug flags for sub-scripts.")
-    parser.add_argument("--local", action="store_true", help="Run sub-scripts in local mode (skip remote operations where applicable and keep raw data locally)")
+    parser.add_argument("--local", action="store_true", help="Run sub-scripts in local mode (skip remote operations, keep intermediate data locally).")
     # Define intermediate file paths
     parser.add_argument("--intermediate-dir", default="./pipeline_intermediate", help="Directory for intermediate files.")
-    parser.add_argument("--local-raw-output-dir", default="./pipeline_output_raw", help="Directory to save raw data when running with --local flag.")
+    # parser.add_argument("--local-raw-output-dir", default="./pipeline_output_raw", help="Directory to save raw data when running with --local flag.") # Replaced by intermediate dir concept
 
     args = parser.parse_args()
 
@@ -106,118 +109,178 @@ if __name__ == "__main__":
     intermediate_dir.mkdir(parents=True, exist_ok=True)
     print(f"Using intermediate directory: {intermediate_dir}")
 
-    # Define intermediate filenames
+    # Define intermediate artifact paths
     new_prs_file = intermediate_dir / "new_prs_to_process.txt"
     updated_log_file = intermediate_dir / "updated_processed_prs.log"
-    # Define path for local raw output if needed
-    local_raw_output_path = Path(args.local_raw_output_dir) if args.local else None
-    if args.local:
-         print(f"Local mode: Raw data will be saved to: {local_raw_output_path}")
-         local_raw_output_path.mkdir(parents=True, exist_ok=True) # Ensure it exists
+    raw_data_dir = intermediate_dir / "raw_data" # Fetcher saves here
+    transformed_data_dir = intermediate_dir / "transformed_data" # Transformer output
+
+    # --- Flags ---
+    # Keep track of step success
+    step1_success = False
+    step2_success = False
+    step3_success = False # Transform step
+    step4_success = False # Load step (upload transformed data)
+    step5_success = False # Log upload step (renamed from step 3)
 
     # --- Step 1: Discover New PRs --- 
+    print("\n" + "="*10 + " STEP 1: Discover New PRs " + "="*10)
     discover_args = [
         config_path,
         "--output-file", str(new_prs_file),
-        "--no-upload",
+        "--no-upload", # Always handle log upload at the end
         "--log-output-path", str(updated_log_file)
     ]
     if args.debug:
         discover_args.append("--debug")
     if args.local:
-        discover_args.append("--local")
-        
+        discover_args.append("--local") # discover_new_prs handles its own --local logic
+
     step1_success = run_script("discover_new_prs.py", discover_args)
 
     if not step1_success:
         print("Pipeline failed at Step 1: Discover New PRs. Exiting.")
-        # Consider cleanup of intermediate_dir? For now, leave it for debugging.
+        # Cleanup? For now, leave intermediate files for debugging.
         sys.exit(1)
 
-    # --- Step 2: Fetch Raw Data --- 
-    step2_success = True # Assume success if no new PRs
-    try:
-        # Check if new PRs were actually found
-        if not new_prs_file.exists() or new_prs_file.stat().st_size == 0:
-            print("No new PRs found to process in Step 2.")
-        else:
-            fetcher_args = [
-                "--config", config_path,
-                "--input-pr-list", str(new_prs_file)
-            ]
-            if args.debug:
-                fetcher_args.append("--debug")
-            # Pass --local-output-dir if orchestrator is in local mode
-            if args.local:
-                 fetcher_args.extend(["--local-output-dir", str(local_raw_output_path)])
-            
-            step2_success = run_script("github_pr_fetcher.py", fetcher_args)
+    # Check if new PRs were found before proceeding to fetch/transform/load
+    if not new_prs_file.exists() or new_prs_file.stat().st_size == 0:
+        print("\nNo new PRs found to process. Skipping Fetch, Transform, and Load steps.")
+        # Mark subsequent steps as "skipped" (or trivially successful)
+        step2_success = True
+        step3_success = True
+        step4_success = True
+        # We still need to potentially upload the log file if discover ran ok.
+    else:
+        # --- Step 2: Fetch Raw Data --- 
+        print("\n" + "="*10 + " STEP 2: Fetch Raw Data " + "="*10)
+        # Always fetch locally to the intermediate directory first
+        raw_data_dir.mkdir(parents=True, exist_ok=True)
+        fetcher_args = [
+            "--config", config_path,
+            "--input-pr-list", str(new_prs_file),
+            "--local-output-dir", str(raw_data_dir) # Use intermediate dir for local output
+        ]
+        if args.debug:
+            fetcher_args.append("--debug")
+        # Fetcher's --local-output-dir handles saving locally.
+        # Upload logic is removed from fetcher and handled by load_data.py later.
 
-            if not step2_success:
-                print("Pipeline failed at Step 2: Fetch Raw Data. Skipping final log upload.")
-                sys.exit(1)
-                
-    except Exception as e:
-        print(f"Error during Step 2 preparation/execution: {e}", file=sys.stderr)
-        step2_success = False
-        sys.exit(1)
+        step2_success = run_script("github_pr_fetcher.py", fetcher_args)
 
-    # --- Step 3: Upload Updated Log File --- 
-    step3_success = False
-    if step1_success and step2_success:
+        if not step2_success:
+            print("Pipeline failed at Step 2: Fetch Raw Data. Skipping subsequent steps.")
+            # Don't upload log if fetch failed
+            sys.exit(1)
+
+        # --- Step 3: Transform and Align Data ---
+        print("\n" + "="*10 + " STEP 3: Transform and Align Data " + "="*10)
+        transformed_data_dir.mkdir(parents=True, exist_ok=True)
+        transformer_args = [
+            "--config", config_path,
+            "--input-dir", str(raw_data_dir),
+            "--output-dir", str(transformed_data_dir),
+        ]
+        if args.debug:
+            transformer_args.append("--debug")
+
+        step3_success = run_script("transform_align.py", transformer_args)
+
+        if not step3_success:
+            print("Pipeline failed at Step 3: Transform and Align Data. Skipping load step.")
+            # Don't upload log if transform failed
+            sys.exit(1)
+
+        # --- Step 4: Load Transformed Data ---
+        print("\n" + "="*10 + " STEP 4: Load Transformed Data " + "="*10)
         if args.local:
-             print("Running in local mode. Skipping final upload of processed log.")
-             print(f"The final updated log is available at: {updated_log_file}")
-             step3_success = True # Consider local mode a success here
+            print("Running in local mode. Skipping remote upload of transformed data.")
+            print(f"Transformed data is available locally at: {transformed_data_dir}")
+            step4_success = True # Consider local mode a success here
+        else:
+            # Check if there's actually transformed data to upload
+            if not any(transformed_data_dir.iterdir()):
+                 print(f"Transformed data directory '{transformed_data_dir}' is empty. Skipping upload.")
+                 step4_success = True
+            else:
+                 loader_args = [
+                     "--config", config_path,
+                     "--input-dir", str(transformed_data_dir),
+                 ]
+                 if args.debug:
+                     loader_args.append("--debug")
+
+                 step4_success = run_script("load_data.py", loader_args)
+
+                 if not step4_success:
+                      print("Pipeline failed at Step 4: Load Transformed Data.")
+                      # Don't upload log if load failed
+                      sys.exit(1)
+
+    # --- Step 5: Upload Updated Log File ---
+    # This runs if Step 1 was successful, AND subsequent steps that ran also succeeded.
+    # If no new PRs were found, steps 2-4 were skipped (success=True), so log still uploads.
+    # If new PRs were found, steps 2-4 must have succeeded.
+    print("\n" + "="*10 + " STEP 5: Upload Final Processed Log " + "="*10)
+    if step1_success and step2_success and step3_success and step4_success:
+        if args.local:
+            print("Running in local mode. Skipping final upload of processed log.")
+            print(f"The final updated log is available at: {updated_log_file}")
+            step5_success = True # Consider local mode a success here
         elif not updated_log_file.exists():
             print(f"Error: Updated log file {updated_log_file} not found. Cannot upload.", file=sys.stderr)
+            step5_success = False # Mark failure
         else:
-            print("\n" + "-"*20 + " Uploading Final Processed Log " + "-"*20)
             metadata_path = Path(config['data_paths']['metadata']).as_posix().strip('/')
             rclone_remote = config['rclone_remote_name']
             remote_log_path = f"{rclone_remote}:{metadata_path}/processed_prs.log"
-            
+
             upload_success, _ = run_rclone_command(['copyto', str(updated_log_file), remote_log_path], suppress_output=not args.debug)
-            
+
             if upload_success:
                 print("Successfully uploaded final processed PR log.")
-                step3_success = True
+                step5_success = True
             else:
                 print("Failed to upload final processed PR log.", file=sys.stderr)
+                step5_success = False # Mark failure
     else:
-         print("Skipping final log upload due to failures in previous steps.")
+        print("Skipping final log upload due to failures or skips in previous steps.")
+        # If prior steps failed, step5_success remains False
 
     # --- Cleanup --- 
-    print("\n" + "-"*20 + " Cleaning Up Intermediate Files " + "-"*20)
+    print("\n" + "="*10 + " STEP 6: Cleaning Up Intermediate Files " + "="*10)
     try:
-        # Only remove intermediate files, not the whole directory if local raw output exists
-        if new_prs_file.exists():
-             new_prs_file.unlink()
-             print(f"Removed intermediate file: {new_prs_file}")
-        if updated_log_file.exists():
-             # If not in local mode OR if local_raw_output_path is different from intermediate_dir parent
-             # we can potentially remove the updated log file too. But let's keep it simple:
-             # Always remove the intermediate log file copy. The user got the raw data if needed.
-             updated_log_file.unlink()
-             print(f"Removed intermediate file: {updated_log_file}")
-        
-        # Try removing the intermediate directory if it's empty
-        if not any(intermediate_dir.iterdir()):
-             intermediate_dir.rmdir()
-             print(f"Removed empty intermediate directory: {intermediate_dir}")
+        # Decide whether to keep intermediate data based on --local or errors
+        final_status_success = step1_success and step2_success and step3_success and step4_success and step5_success
+        keep_intermediate = args.local or not final_status_success
+
+        if keep_intermediate:
+            print(f"Keeping intermediate directory due to --local flag or pipeline errors: {intermediate_dir}")
+            # Optionally, still remove specific temp files like the PR list?
+            if new_prs_file.exists():
+                 new_prs_file.unlink()
+                 print(f"Removed intermediate file: {new_prs_file}")
+            # Keep raw_data_dir, transformed_data_dir, and updated_log_file
         else:
-             print(f"Intermediate directory {intermediate_dir} not empty, leaving it.")
-             
+            print(f"Pipeline finished successfully. Removing intermediate directory: {intermediate_dir}")
+            shutil.rmtree(intermediate_dir)
+
     except Exception as e:
-        print(f"Warning: Failed during cleanup of intermediate directory {intermediate_dir}: {e}", file=sys.stderr)
+        print(f"Warning: Failed during cleanup: {e}", file=sys.stderr)
 
     # --- Final Status --- 
     print("="*40)
-    if step1_success and step2_success and step3_success:
+    if final_status_success:
         print("Pipeline finished successfully.")
         if args.local:
-            print(f"Raw data saved locally in: {local_raw_output_path}")
+             print(f"Intermediate data retained locally in: {intermediate_dir}")
+             print(f"(Raw data: {raw_data_dir})")
+             print(f"(Transformed data: {transformed_data_dir})")
+             print(f"(Updated log: {updated_log_file})")
+
         sys.exit(0)
     else:
         print("Pipeline finished with errors.")
+        if args.local:
+             print(f"Intermediate data retained locally for debugging in: {intermediate_dir}")
         sys.exit(1) 
