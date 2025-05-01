@@ -1,0 +1,39 @@
+version: '3.8'
+
+services:
+  fastapi:
+    build: ./fastapi-app
+    container_name: deepseek-fastapi
+    ports:
+      - "8000:8000"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]
+    environment:
+      - MODEL_PATH=/app/model  # if needed
+    volumes:
+      - ./fastapi-app:/app
+    restart: always
+
+  prometheus:
+    image: prom/prometheus
+    container_name: prometheus
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+    restart: always
+
+  grafana:
+    image: grafana/grafana
+    container_name: grafana
+    volumes:
+      - grafana-storage:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    restart: always
+
+volumes:
+  grafana-storage:
