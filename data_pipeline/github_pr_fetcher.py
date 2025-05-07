@@ -14,6 +14,9 @@ from unidiff import PatchSet
 from io import StringIO
 import datetime
 
+# --- Configuration and Constants ---
+CHECKPOINT_FILENAME = ".fetch_checkpoint.log"
+
 def get_github_token():
     """Retrieves the GitHub token from the environment variable."""
     token = os.environ.get("GITHUB_TOKEN")
@@ -26,13 +29,15 @@ def load_config(config_path):
     try:
         with open(config_path, 'r') as f:
             config = yaml.safe_load(f)
-        # Basic validation (add specific checks needed by fetcher)
+        # Basic validation
         if not config:
             raise ValueError("Config file is empty.")
         if 'data_paths' not in config or 'raw' not in config['data_paths']:
              raise ValueError("Missing 'data_paths.raw' in config.")
-        if 'rclone_remote_name' not in config or not config['rclone_remote_name']:
+        if 'rclone_remote_name' not in config or not config['rclone_remote_name']: # Keep for rclone
             raise ValueError("Missing or empty 'rclone_remote_name' in config.")
+        if 's3_target_path' not in config or not config['s3_target_path']: # New for S3 path
+            raise ValueError("Missing or empty 's3_target_path' in config for remote uploads.")
         return config
     except FileNotFoundError:
         print(f"Error: Config file not found at {config_path}", file=sys.stderr)
@@ -183,33 +188,134 @@ def find_hunk_and_line_for_comment(parsed_diff, comment_path, comment_pos):
     # If loop completes without finding the position
     return None, None
 
+# --- New Helper Functions for Checkpointing and Batching ---
+
+def load_checkpoint(checkpoint_path: Path) -> dict:
+    """Loads the checkpoint file (JSON) into a dictionary."""
+    if checkpoint_path.exists():
+        try:
+            with open(checkpoint_path, 'r') as f:
+                return json.load(f)
+        except json.JSONDecodeError:
+            print(f"Warning: Checkpoint file {checkpoint_path} is corrupted. Starting fresh.", file=sys.stderr)
+            return {}
+        except Exception as e:
+            print(f"Warning: Could not read checkpoint file {checkpoint_path}: {e}. Starting fresh.", file=sys.stderr)
+            return {}
+    return {}
+
+def save_checkpoint(checkpoint_path: Path, processed_data: dict):
+    """Saves the processed data dictionary to the checkpoint file (JSON)."""
+    try:
+        checkpoint_path.parent.mkdir(parents=True, exist_ok=True) # Ensure directory exists
+        with open(checkpoint_path, 'w') as f:
+            json.dump(processed_data, f, indent=2)
+        print(f"Checkpoint saved to {checkpoint_path}")
+    except Exception as e:
+        print(f"Error saving checkpoint to {checkpoint_path}: {e}", file=sys.stderr)
+
+def is_pr_processed(owner: str, repo_name: str, pr_number: int, processed_prs_by_repo: dict) -> bool:
+    """Checks if a PR is marked as processed in the checkpoint data."""
+    repo_key = f"{owner}/{repo_name}"
+    return repo_key in processed_prs_by_repo and pr_number in processed_prs_by_repo[repo_key]
+
+def group_prs_by_repository(pr_urls: list[str]) -> dict[str, list[dict]]:
+    """Groups PR URLs by repository, storing parsed details."""
+    grouped = {}
+    for url in pr_urls:
+        try:
+            owner, repo, pr_number = parse_github_pr_url(url)
+            repo_key = f"{owner}/{repo}"
+            if repo_key not in grouped:
+                grouped[repo_key] = []
+            grouped[repo_key].append({'url': url, 'owner': owner, 'repo': repo, 'pr_number': pr_number})
+        except ValueError:
+            print(f"Skipping invalid PR URL during grouping: {url}", file=sys.stderr)
+    return grouped
+
+def upload_repository_batch_to_s3(config: dict, local_repo_data_path: Path, owner: str, repo_name: str) -> bool:
+    """
+    Uploads all files in the local_repo_data_path for a specific repository to S3 using rclone.
+    The S3 path will be <rclone_remote_name>:<s3_target_path>/<owner>/<repo_name>/
+    """
+    rclone_remote = config['rclone_remote_name']
+    s3_base_path = config['s3_target_path'].strip('/') # Ensure no leading/trailing slashes for joining
+    
+    # Corrected remote_path construction
+    remote_path = f"{rclone_remote}:{s3_base_path}/{owner}/{repo_name}"
+    
+    # local_repo_data_path already points to .../owner/repo_name, so we just append /
+    # to copy its contents.
+    source_path_for_rclone = str(local_repo_data_path) + ("" if str(local_repo_data_path).endswith('/') else "/")
+
+
+    if not local_repo_data_path.exists() or not any(local_repo_data_path.iterdir()):
+        print(f"No files found in {local_repo_data_path} to upload for {owner}/{repo_name}. Skipping S3 upload.", file=sys.stdout)
+        return True # Nothing to upload, so "success"
+
+    cmd = [
+        "rclone", "copy", "--retries", "3", "--retries-sleep", "10s",
+        str(source_path_for_rclone), # Source: local directory for the repo
+        remote_path # Destination: S3 path for the repo
+    ]
+    print(f"Attempting to upload batch for {owner}/{repo_name} to {remote_path} using command: {' '.join(cmd)}")
+    try:
+        # Add timeout to rclone command
+        result = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=300) # 5 min timeout
+        if result.returncode == 0:
+            print(f"Successfully uploaded batch for {owner}/{repo_name} to {remote_path}")
+            # Potentially list files:
+            # list_cmd = ["rclone", "ls", remote_path]
+            # list_result = subprocess.run(list_cmd, capture_output=True, text=True, check=False)
+            # print(f"Uploaded files:\n{list_result.stdout}")
+            return True
+        else:
+            print(f"Error uploading batch for {owner}/{repo_name} to {remote_path}.", file=sys.stderr)
+            print(f"Rclone stdout:\n{result.stdout}", file=sys.stderr)
+            print(f"Rclone stderr:\n{result.stderr}", file=sys.stderr)
+            return False
+    except subprocess.TimeoutExpired:
+        print(f"Rclone command timed out for {owner}/{repo_name}.", file=sys.stderr)
+        return False
+    except FileNotFoundError:
+        print("Error: rclone command not found. Please ensure rclone is installed and in your PATH.", file=sys.stderr)
+        return False
+    except Exception as e:
+        print(f"An unexpected error occurred during rclone execution for {owner}/{repo_name}: {e}", file=sys.stderr)
+        return False
+
+
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Fetch GitHub PR diff and comments and save raw data locally.")
+    parser = argparse.ArgumentParser(description="Fetch GitHub PR diff and comments, save raw data, and upload to S3.")
     parser.add_argument("--config", required=True, help="Path to the YAML configuration file.")
     parser.add_argument("--input-pr-list", required=True, help="Path to a text file containing PR URLs to process, one URL per line.")
     parser.add_argument("--debug", action="store_true", help="Enable debug mode with more verbose output")
     parser.add_argument("--local-output-dir", required=True, help="Directory to save the raw diff and comment files locally.")
+    parser.add_argument("--skip-remote-upload", action="store_true", help="Skip uploading files to S3 remote.")
     args = parser.parse_args()
 
     # --- Load Config ---
-    config = load_config(args.config) # Keep load_config for basic validation
+    config = load_config(args.config)
 
     # --- Setup local output directory ---
     local_output_path = Path(args.local_output_dir)
     local_output_path.mkdir(parents=True, exist_ok=True)
-    print(f"Ensured local output directory exists: {local_output_path}")
-    # save_locally flag is removed, it's always true now.
-    # Remote upload mode print removed.
+    print(f"Local output directory: {local_output_path}")
+
+    # --- Checkpoint Setup ---
+    checkpoint_file_path = local_output_path / CHECKPOINT_FILENAME
+    processed_prs_by_repo_checkpoint = load_checkpoint(checkpoint_file_path)
+    # This will be updated during processing and saved after each repo batch or S3 skip.
 
     # --- Read PR List ---
-    pr_urls_to_process = []
+    all_input_pr_urls = []
     try:
         with open(args.input_pr_list, 'r') as f:
             for line in f:
                 url = line.strip()
                 if url:
-                    pr_urls_to_process.append(url)
-        print(f"Read {len(pr_urls_to_process)} PR URLs from {args.input_pr_list}")
+                    all_input_pr_urls.append(url)
+        print(f"Read {len(all_input_pr_urls)} PR URLs from {args.input_pr_list}")
     except FileNotFoundError:
         print(f"Error: Input PR list file not found at {args.input_pr_list}", file=sys.stderr)
         sys.exit(1)
@@ -217,73 +323,92 @@ if __name__ == "__main__":
         print(f"Error reading input PR list {args.input_pr_list}: {e}", file=sys.stderr)
         sys.exit(1)
 
-    if not pr_urls_to_process:
+    if not all_input_pr_urls:
         print("No PR URLs found in the input file. Exiting.")
         sys.exit(0)
         
+    # --- Group PRs by Repository ---
+    prs_grouped_by_repository = group_prs_by_repository(all_input_pr_urls)
+    if not prs_grouped_by_repository:
+        print("No valid PR URLs to process after grouping. Exiting.")
+        sys.exit(0)
+
     # --- GitHub API Setup --- 
     try:
         token = get_github_token()
         auth = Auth.Token(token)
-        # Add sensible timeouts and retries
-        g = Github(auth=auth, retry=5, timeout=30)
+        g = Github(auth=auth, retry=5, timeout=60) # Increased timeout for Github client
         print("GitHub client initialized.")
-        # Verify connection/token early?
         print(f"Authenticated as user: {g.get_user().login}")
     except Exception as e:
         print(f"Error initializing GitHub client: {e}", file=sys.stderr)
         sys.exit(1)
 
     # --- Processing Loop ---
-    success_count = 0
-    failure_count = 0
+    overall_success_count = 0
+    overall_failure_count = 0
+    
+    # Store all successfully processed PRs (owner, repo, number) across all batches in this run
+    # to later compare with all_input_pr_urls for checkpoint deletion.
+    all_prs_fully_processed_in_this_run_or_before = set()
+    # Populate from existing checkpoint
+    for repo_key_chk, pr_nums_chk in processed_prs_by_repo_checkpoint.items():
+        owner_chk, repo_name_chk = repo_key_chk.split('/', 1)
+        for pr_num_chk in pr_nums_chk:
+            all_prs_fully_processed_in_this_run_or_before.add((owner_chk, repo_name_chk, pr_num_chk))
 
-    # --- EDIT: Removed temp directory logic ---
-    # We write directly to the specified local_output_path
 
-    try:
-        # --- EDIT: Use local_output_path directly ---
-        base_output_dir = local_output_path
+    for repo_key, pr_details_list in prs_grouped_by_repository.items():
+        owner, repo_name = repo_key.split('/', 1)
+        print(f"\n--- Processing Repository: {owner}/{repo_name} ---")
 
-        for pr_url in pr_urls_to_process:
+        repo_batch_successfully_fetched_and_saved = [] # List of (owner, repo, pr_number, diff_path, comments_path)
+        repo_batch_had_errors = False
+
+        for pr_info in pr_details_list:
+            pr_url = pr_info['url']
+            pr_number = pr_info['pr_number']
+            
             print("-"*40)
-            pr_processed_successfully = False # Flag for this specific PR
-            local_diff_path = None # Ensure paths are defined for potential cleanup
+            print(f"Processing PR: {pr_url}")
+
+            if is_pr_processed(owner, repo_name, pr_number, processed_prs_by_repo_checkpoint):
+                print(f"PR {pr_url} already processed according to checkpoint. Skipping.")
+                all_prs_fully_processed_in_this_run_or_before.add((owner, repo_name, pr_number)) # Ensure it's counted
+                # No need to increment overall_success_count here as it's from a previous run.
+                # We only count successes for PRs processed *in this current run*.
+                continue
+
+            pr_processed_successfully_this_iteration = False
+            local_diff_path = None
             local_comments_path = None
+            
             try:
-                owner, repo_name, pr_number = parse_github_pr_url(pr_url)
+                # file_basename for this PR
                 file_basename = f"{owner}_{repo_name}_{pr_number}"
+                
+                # Define local paths within the base output directory, organized by owner/repo
+                pr_specific_output_dir = local_output_path / owner / repo_name
+                pr_specific_output_dir.mkdir(parents=True, exist_ok=True)
+                local_diff_path = pr_specific_output_dir / f"{file_basename}.diff"
+                local_comments_path = pr_specific_output_dir / f"{file_basename}_comments.jsonl"
 
-                # Define local paths within the base output directory
-                # Create owner/repo subdirs for better organization
-                pr_output_dir = base_output_dir / owner / repo_name
-                pr_output_dir.mkdir(parents=True, exist_ok=True)
-                local_diff_path = pr_output_dir / f"{file_basename}.diff"
-                local_comments_path = pr_output_dir / f"{file_basename}_comments.jsonl"
-
-                # Fetch data
-                # Add rate limit handling around the fetch call
+                # Fetch data (with rate limit retry loop)
+                diff_text, comments_list, error_msg = None, None, None
                 while True:
                     try:
                         diff_text, comments_list, error_msg = fetch_pr_data(g, pr_url)
                         if error_msg:
-                             # If fetch_pr_data handled rate limit internally and suggests retry, it might return a specific error
-                             # For now, assume any error_msg means failure for this PR here.
-                             raise Exception(error_msg)
-                        break # Success
-                    except RateLimitExceededException as rlee:
+                             raise Exception(f"fetch_pr_data returned an error: {error_msg}")
+                        break # Success from fetch_pr_data
+                    except RateLimitExceededException:
                         reset_time = g.get_rate_limit().core.reset
-                        wait_seconds = max((reset_time - datetime.datetime.now(datetime.timezone.utc)).total_seconds() + 10, 15) # Wait until reset + buffer
-                        print(f"Rate limit hit. Waiting for {wait_seconds:.0f} seconds until {reset_time}...")
+                        wait_seconds = max((reset_time - datetime.datetime.now(datetime.timezone.utc)).total_seconds() + 10, 15)
+                        print(f"Rate limit hit for {pr_url}. Waiting for {wait_seconds:.0f} seconds until {reset_time}...")
                         time.sleep(wait_seconds)
-                        # Retry the fetch
-                    except GithubException as ge:
-                         # Handle other GitHub errors (e.g., 404 Not Found, 50x Server Error)
-                         print(f"GitHub API error for {pr_url}: {ge}. Skipping PR.", file=sys.stderr)
-                         raise # Re-raise to be caught by the outer loop's exception handler
+                    # Other GithubException or general exceptions from fetch_pr_data will be caught by the outer try-except
 
-                # --- EDIT: Simplified saving, removed upload ---
-                # Save locally (mandatory now)
+                # Save locally
                 print(f"Saving diff locally to {local_diff_path}")
                 with open(local_diff_path, 'w', encoding='utf-8') as f_diff:
                     f_diff.write(diff_text)
@@ -292,41 +417,150 @@ if __name__ == "__main__":
                 if not save_comments_to_jsonl(comments_list, local_comments_path):
                      raise Exception(f"Failed to save comments locally for {pr_url}")
 
-                # --- EDIT: Removed rclone upload block ---
+                print(f"Successfully fetched and saved PR: {pr_url}")
+                pr_processed_successfully_this_iteration = True
+                repo_batch_successfully_fetched_and_saved.append({
+                    "owner": owner, "repo": repo_name, "pr_number": pr_number,
+                    "diff_path": local_diff_path, "comments_path": local_comments_path
+                })
 
-                print(f"Successfully processed PR: {pr_url}")
-                pr_processed_successfully = True
-
-            except ValueError as ve:
-                print(f"Skipping invalid URL from input list: {pr_url} - {ve}", file=sys.stderr)
+            except ValueError as ve: # From parse_github_pr_url if it was somehow missed in grouping
+                print(f"Skipping invalid URL: {pr_url} - {ve}", file=sys.stderr)
+                repo_batch_had_errors = True
+            except GithubException as ge:
+                print(f"GitHub API error processing PR {pr_url}: {ge}. Will not be added to current batch.", file=sys.stderr)
+                repo_batch_had_errors = True
             except Exception as pr_e:
-                print(f"Error processing PR {pr_url}: {pr_e}", file=sys.stderr)
-                # Keep partially created local files for debugging when an error occurs
+                print(f"Error processing PR {pr_url}: {pr_e}. Will not be added to current batch.", file=sys.stderr)
+                repo_batch_had_errors = True
+            
+            # Tally individual PR success/failure FOR THIS RUN
+            # This is different from overall_success_count which tracks PRs added to checkpoint.
+            # If pr_processed_successfully_this_iteration is false, it counts towards overall_failure_count for the run summary.
+            if not pr_processed_successfully_this_iteration and not is_pr_processed(owner, repo_name, pr_number, processed_prs_by_repo_checkpoint) :
+                 overall_failure_count +=1
 
-            finally:
-                 if pr_processed_successfully:
-                     success_count += 1
-                 else:
-                     failure_count += 1
-                 # --- EDIT: Removed individual file cleanup ---
-                 # We are not using a temp dir, keep files in the output dir
 
-    finally:
-        # --- EDIT: Removed temp_dir_context exit ---
-        pass # No temp dir context manager anymore
+        # --- After processing all PRs for the current repository ---
+        if repo_batch_successfully_fetched_and_saved:
+            batch_upload_successful_or_skipped = False
+            if args.skip_remote_upload:
+                print(f"Skipping remote S3 upload for repository {owner}/{repo_name} as per --skip-remote-upload flag.")
+                batch_upload_successful_or_skipped = True
+            else:
+                print(f"Attempting to upload batch for repository {owner}/{repo_name} to S3.")
+                # The path for rclone should be the parent directory containing all PR files for this repo
+                repo_data_path_for_upload = local_output_path / owner / repo_name
+                if upload_repository_batch_to_s3(config, repo_data_path_for_upload, owner, repo_name):
+                    print(f"Successfully uploaded batch for {owner}/{repo_name}.")
+                    batch_upload_successful_or_skipped = True
+                else:
+                    print(f"Failed to upload batch for repository {owner}/{repo_name} to S3. These PRs will not be checkpointed in this run.", file=sys.stderr)
+                    repo_batch_had_errors = True # Mark that this repo batch had errors at upload stage
+                     # PRs that were locally saved but failed to upload contribute to failure_count
+                    overall_failure_count += len(repo_batch_successfully_fetched_and_saved)
+
+
+            if batch_upload_successful_or_skipped:
+                print(f"Updating checkpoint for repository {owner}/{repo_name}...")
+                repo_key_for_checkpoint = f"{owner}/{repo_name}"
+                if repo_key_for_checkpoint not in processed_prs_by_repo_checkpoint:
+                    processed_prs_by_repo_checkpoint[repo_key_for_checkpoint] = []
+                
+                newly_checkpointed_count_for_repo = 0
+                for pr_data in repo_batch_successfully_fetched_and_saved:
+                    # Add to checkpoint only if not already there (though skip logic should prevent this)
+                    if pr_data["pr_number"] not in processed_prs_by_repo_checkpoint[repo_key_for_checkpoint]:
+                        processed_prs_by_repo_checkpoint[repo_key_for_checkpoint].append(pr_data["pr_number"])
+                        all_prs_fully_processed_in_this_run_or_before.add((owner, repo_name, pr_data["pr_number"]))
+                        overall_success_count += 1 # This PR is now fully processed and checkpointed.
+                        newly_checkpointed_count_for_repo +=1
+                
+                if newly_checkpointed_count_for_repo > 0:
+                     # Sort PR numbers for consistent checkpoint file
+                    processed_prs_by_repo_checkpoint[repo_key_for_checkpoint].sort()
+                    save_checkpoint(checkpoint_file_path, processed_prs_by_repo_checkpoint)
+                else:
+                    print(f"No new PRs to checkpoint for {owner}/{repo_name} in this batch.")
+            else: # Batch upload failed
+                print(f"Skipping checkpoint update for {owner}/{repo_name} due to S3 upload failure or because all PRs in batch failed before upload stage.")
+        
+        elif not repo_batch_successfully_fetched_and_saved and not repo_batch_had_errors:
+             print(f"No new PRs processed for repository {owner}/{repo_name} in this run (all might have been skipped or input list for repo was empty).")
+
+
+    # --- Final Checkpoint Cleanup ---
+    all_input_prs_parsed_details = []
+    for url in all_input_pr_urls:
+        try:
+            owner_in, repo_in, pr_num_in = parse_github_pr_url(url)
+            all_input_prs_parsed_details.append((owner_in, repo_in, pr_num_in))
+        except ValueError:
+            pass # Already logged during grouping
+
+    # Check if every PR in the original input list is now considered processed
+    # (either from this run or a previous one via checkpoint)
+    # This means that all_prs_fully_processed_in_this_run_or_before must contain every item from all_input_prs_parsed_details
+    
+    # Corrected logic for checkpoint deletion:
+    # Only delete if there were NO failures in *this current run* AND all PRs from input list are in the checkpoint
+    
+    num_total_input_prs = len(all_input_prs_parsed_details)
+    num_successfully_processed_ever = len(all_prs_fully_processed_in_this_run_or_before)
+
+    can_delete_checkpoint = True
+    if overall_failure_count > 0: # If any PR failed in *this specific run*
+        print(f"Checkpoint file {checkpoint_file_path} will be kept due to {overall_failure_count} failures in this run.")
+        can_delete_checkpoint = False
+    else: # No failures in this run, now check if all input PRs are covered
+        if num_successfully_processed_ever >= num_total_input_prs:
+            # Double check: every single PR from input must be in the 'all_prs_fully_processed_in_this_run_or_before' set
+            all_required_prs_are_processed = True
+            for req_owner, req_repo, req_pr_num in all_input_prs_parsed_details:
+                if (req_owner, req_repo, req_pr_num) not in all_prs_fully_processed_in_this_run_or_before:
+                    all_required_prs_are_processed = False
+                    print(f"Debug: Required PR {req_owner}/{req_repo}#{req_pr_num} not found in fully processed set for checkpoint deletion.")
+                    break
+            
+            if all_required_prs_are_processed:
+                print(f"All {num_total_input_prs} PRs from input list are processed and no failures in this run. Deleting checkpoint file.")
+                try:
+                    checkpoint_file_path.unlink(missing_ok=True)
+                except Exception as e:
+                    print(f"Error deleting checkpoint file {checkpoint_file_path}: {e}", file=sys.stderr)
+            else:
+                print(f"Checkpoint file {checkpoint_file_path} will be kept as not all PRs from the input list are fully processed yet (processed: {num_successfully_processed_ever}/{num_total_input_prs}).")
+                can_delete_checkpoint = False # Redundant given the flow but good for clarity
+        else:
+            print(f"Checkpoint file {checkpoint_file_path} will be kept. Not all PRs from input list are processed (processed: {num_successfully_processed_ever}/{num_total_input_prs}).")
+            can_delete_checkpoint = False
+
 
     # --- Summary ---
     print("="*40)
     print("Processing Summary:")
-    print(f"  Total PRs attempted: {len(pr_urls_to_process)}")
-    print(f"  Successfully processed & saved/uploaded: {success_count}")
-    print(f"  Failed: {failure_count}")
+    print(f"  Total PRs listed in input file: {len(all_input_pr_urls)}")
+    print(f"  Number of unique repositories processed: {len(prs_grouped_by_repository)}")
+    # overall_success_count is PRs NEWLY checkpointed in THIS RUN
+    print(f"  Successfully processed & checkpointed in this run: {overall_success_count}")
+    print(f"  Failed in this run (fetch, save, or upload): {overall_failure_count}")
+    print(f"  Total PRs in checkpoint (including previous runs): {sum(len(prs) for prs in processed_prs_by_repo_checkpoint.values())}")
     print("="*40)
 
-    # Exit with non-zero code if there were failures
-    if failure_count > 0:
+    if overall_failure_count > 0:
         print("Completed with errors.")
         sys.exit(1)
     else:
-        print("Completed successfully.")
-        sys.exit(0)
+        # Check if all input PRs are in the checkpoint, even if no *new* ones were processed this run
+        # This means a "successful" completion even if all were skipped due to prior processing.
+        all_input_covered_by_checkpoint = True
+        for req_owner, req_repo, req_pr_num in all_input_prs_parsed_details:
+            if not is_pr_processed(req_owner, req_repo, req_pr_num, processed_prs_by_repo_checkpoint):
+                all_input_covered_by_checkpoint = False
+                break
+        if all_input_covered_by_checkpoint:
+             print("Completed successfully. All input PRs are accounted for in the checkpoint.")
+             sys.exit(0)
+        else:
+             print("Completed (no new errors in this run), but not all input PRs are in the checkpoint yet.")
+             sys.exit(1) # Technically not an error IN THIS RUN, but the overall task isn't complete.
