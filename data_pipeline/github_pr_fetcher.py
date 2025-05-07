@@ -57,7 +57,8 @@ def fetch_pr_data(g: Github, pr_url: str):
     Fetches the unified diff and review comments for a given GitHub PR URL.
     Returns tuple (diff_text, comments_list, error_message) 
     comments_list contains comment objects directly from PyGithub.
-    Returns (None, None, error_message) on failure.
+    Returns (None, None, error_message) on non-rate-limit failure.
+    Raises RateLimitExceededException if that specific error occurs.
     """
     try:
         owner, repo_name, pr_number = parse_github_pr_url(pr_url)
@@ -67,14 +68,25 @@ def fetch_pr_data(g: Github, pr_url: str):
         pr = repo.get_pull(pr_number)
 
         # --- Fetch Unified Diff --- 
-        # Use requests directly as PyGithub's diff handling can be tricky
-        token = get_github_token() # Re-get token in case it expires? Or pass from main?
+        token = get_github_token() 
         headers = {
             'Authorization': f'token {token}',
             'Accept': 'application/vnd.github.v3.diff'
         }
+        # Add a timeout to requests.get as well
         diff_response = requests.get(pr.diff_url, headers=headers, timeout=30)
-        diff_response.raise_for_status() # Raise exception for bad status codes
+        
+        # Check for 429 specifically from requests, as PyGithub won't catch this
+        if diff_response.status_code == 429:
+            print(f"Rate limit hit (429) fetching diff for {pr_url} via requests. Re-raising for retry.", file=sys.stderr)
+            # Try to get reset time from headers if available, otherwise raise generic RateLimitExceededException
+            # GitHub typically sends 'X-RateLimit-Reset' header (UTC epoch seconds)
+            # PyGithub's RateLimitExceededException expects 'headers' and 'data'
+            # It's simpler to just raise and let the PyGithub object handle getting reset time
+            # or provide a dummy one for the outer loop to re-query
+            raise RateLimitExceededException(status=429, data={}, headers=diff_response.headers)
+
+        diff_response.raise_for_status() 
         diff_text = diff_response.text
         if not diff_text:
              print(f"Warning: Diff content for {pr_url} is empty.")
@@ -82,16 +94,16 @@ def fetch_pr_data(g: Github, pr_url: str):
         # --- Fetch Review Comments --- 
         print("Fetching review comments...")
         review_comments_paginated = pr.get_review_comments()
-        comments_list = list(review_comments_paginated) # Convert PaginatedList to list
+        comments_list = list(review_comments_paginated)
         print(f"Found {len(comments_list)} review comments.")
 
         return diff_text, comments_list, None
 
+    except RateLimitExceededException: # Explicitly catch and re-raise
+        print(f"Rate limit exceeded during API call within fetch_pr_data for {pr_url}. Re-raising.", file=sys.stderr)
+        raise # Re-raise the original RateLimitExceededException
     except GithubException as ge:
-        # Handle rate limits specifically
-        if isinstance(ge, RateLimitExceededException):
-             print(f"Rate limit exceeded while fetching data for {pr_url}. Need to wait.", file=sys.stderr)
-             # Consider adding retry/wait logic here if needed within a single PR fetch
+        # All other GithubExceptions (Not Found, Server Error, etc.)
         error_msg = f"GitHub API error fetching {pr_url}: {ge}"
         print(error_msg, file=sys.stderr)
         return None, None, error_msg
@@ -104,7 +116,7 @@ def fetch_pr_data(g: Github, pr_url: str):
         print(error_msg, file=sys.stderr)
         return None, None, error_msg
     except Exception as e:
-        error_msg = f"Unexpected error fetching data for {pr_url}: {e}"
+        error_msg = f"Unexpected error fetching data for {pr_url}: {type(e).__name__} - {e}"
         print(error_msg, file=sys.stderr)
         return None, None, error_msg
 
