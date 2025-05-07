@@ -1,0 +1,94 @@
+---
+- name: Deploy Code Reviewer Platform via ArgoCD & Helm
+  hosts: node1
+  become: yes
+  vars:
+    argocd_username: "admin"
+    repo_path: "https://github.com/BugBeak/MLOps.git"
+    app_name: "code-reviewer-platform-project32"
+    app_path: "k8s/platform"
+    argocd_namespace: argocd
+
+  tasks:
+    - name: Get ArgoCD admin password from Kubernetes secret
+      command: >
+        kubectl get secret -n {{ argocd_namespace }} argocd-initial-admin-secret \
+        -o jsonpath="{.data.password}"
+      register: argocd_password_base64
+
+    - name: Decode ArgoCD admin password
+      shell: echo {{ argocd_password_base64.stdout }} | base64 --decode
+      register: argocd_password
+
+    - name: Log in to ArgoCD
+      command: >
+        argocd login localhost --username {{ argocd_username }} \
+        --password "{{ argocd_password.stdout }}" --grpc-web --port-forward --port-forward-namespace={{ argocd_namespace }}
+      register: login_result
+      changed_when: false
+
+    - name: Add repository to ArgoCD
+      command: >
+        argocd repo add {{ repo_path }} --port-forward --port-forward-namespace={{ argocd_namespace }}
+      register: repo_result
+      changed_when: "'Repository already exists' not in repo_result.stderr"
+
+    - name: Detect external IP starting with 10.56
+      set_fact:
+        external_ip: "{{ ansible_all_ipv4_addresses | select('match', '^10\\.56\\..*') | list | first }}"
+
+    - name: Ensure code-reviewer-platform namespace exists
+      command: kubectl get namespace code-reviewer-platform-project32
+      register: ns_check
+      failed_when: false
+      changed_when: false
+
+    - name: Create code-reviewer-platform namespace if missing
+      when: ns_check.rc != 0
+      command: kubectl create namespace code-reviewer-platform-project32
+
+    - name: Create GitHub access token secret
+      command: >
+        kubectl create secret generic github-access-token
+        --namespace code-reviewer-platform-project32
+        --from-literal=token=your-github-token-here
+      register: github_token_secret
+      failed_when: github_token_secret.rc != 0 and "AlreadyExists" not in github_token_secret.stderr
+      changed_when: github_token_secret.rc == 0
+
+    - name: Check if ArgoCD application exists
+      command: >
+        argocd app get {{ app_name }} --port-forward --port-forward-namespace={{ argocd_namespace }}
+      register: app_check
+      failed_when: false
+      changed_when: false
+
+    - name: Create ArgoCD Helm application if it does not exist
+      when: app_check.rc != 0
+      command: >
+        argocd app create {{ app_name }} \
+        --repo {{ repo_path }} \
+        --path {{ app_path }} \
+        --dest-server https://kubernetes.default.svc \
+        --dest-namespace code-reviewer-platform-project32 \
+        --helm-set-string service.externalIP={{ external_ip }} \
+        --port-forward --port-forward-namespace={{ argocd_namespace }} \
+        --sync-policy automated --self-heal
+      register: app_create
+
+    - name: Update ArgoCD Helm application if it exists
+      when: app_check.rc == 0
+      command: >
+        argocd app set {{ app_name }} \
+        --dest-namespace code-reviewer-platform-project32 \
+        --helm-set-string service.externalIP={{ external_ip }} \
+        --port-forward --port-forward-namespace={{ argocd_namespace }}
+      register: app_update
+
+    - name: Display ArgoCD app status
+      command: argocd app get {{ app_name }} --port-forward --port-forward-namespace={{ argocd_namespace }}
+      register: final_status
+  
+    - name: Show final status
+      debug:
+        var: final_status.stdout
