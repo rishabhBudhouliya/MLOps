@@ -1,0 +1,103 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: train-model
+spec:
+  entrypoint: training-and-build
+  arguments:
+    parameters:
+    - name: github-repo
+    - name: training-dataset-version
+
+  templates:
+  - name: training-and-build
+    steps:
+      - - name: fetch-training-data
+          template: get-code-review-data
+          arguments:
+            parameters:
+            - name: github-repo
+              value: "{{workflow.parameters.github-repo}}"
+            - name: dataset-version
+              value: "{{workflow.parameters.training-dataset-version}}"
+      - - name: train-code-review-model
+          template: run-training
+          arguments:
+            parameters:
+            - name: dataset-path
+              value: "{{steps.fetch-training-data.outputs.result}}"
+      - - name: build-container
+          template: trigger-build
+          arguments:
+            parameters:
+            - name: model-version
+              value: "{{steps.train-code-review-model.outputs.result}}"
+          when: "{{steps.train-code-review-model.outputs.result}} != ''"
+
+  - name: get-code-review-data
+    inputs:
+      parameters:
+      - name: github-repo
+      - name: dataset-version
+    container:
+      image: python:3.11-slim
+      command: [sh, -c]
+      args:
+        - |
+          pip install requests
+          python -c '
+          import os
+          import requests
+          import json
+          
+          # Download code review dataset from specified source
+          repo = "{{inputs.parameters.github-repo}}"
+          version = "{{inputs.parameters.dataset-version}}"
+          
+          # Logic to fetch dataset - this would be customized based on your data source
+          # For this example, assuming data is in S3/MinIO
+          
+          dataset_path = f"/tmp/code_review_data_{version}"
+          os.makedirs(dataset_path, exist_ok=True)
+          
+          print(dataset_path)
+          '
+      
+  - name: run-training
+    inputs:
+      parameters:
+      - name: dataset-path
+    container:
+      image: project32/code-review-training:latest
+      command: [python, train.py]
+      args: ["--data-path", "{{inputs.parameters.dataset-path}}"]
+      volumeMounts:
+      - name: model-data
+        mountPath: /models
+      env:
+        - name: MLFLOW_TRACKING_URI
+          value: http://mlflow.project32-platform.svc.cluster.local:8000
+    outputs:
+      parameters:
+      - name: result
+        valueFrom:
+          path: /models/version.txt
+
+  - name: trigger-build
+    inputs:
+      parameters:
+      - name: model-version
+    resource:
+      action: create
+      manifest: |
+        apiVersion: argoproj.io/v1alpha1
+        kind: Workflow
+        metadata:
+          generateName: build-container-image-
+        spec:
+          workflowTemplateRef:
+            name: build-container-image
+          arguments:
+            parameters:
+            - name: model-version
+              value: "{{inputs.parameters.model-version}}"

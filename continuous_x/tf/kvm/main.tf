@@ -39,20 +39,16 @@ resource "openstack_networking_port_v2" "sharednet2_ports" {
 
 resource "openstack_compute_instance_v2" "nodes" {
   for_each = var.nodes
-
   name        = "${each.key}-project32"
   image_name  = "CC-Ubuntu24.04"
   flavor_name = "m1.medium"
   key_pair    = var.key
-
   network {
     port = openstack_networking_port_v2.sharednet2_ports[each.key].id
   }
-
   network {
     port = openstack_networking_port_v2.private_net_ports[each.key].id
   }
-
   user_data = <<-EOF
     #! /bin/bash
     sudo echo "127.0.1.1 ${each.key}-project32" >> /etc/hosts
@@ -60,8 +56,9 @@ resource "openstack_compute_instance_v2" "nodes" {
   EOF
 }
 
+# Fix for the floating IP assignment - it should reference the correct key
 resource "openstack_networking_floatingip_v2" "floating_ip" {
   pool        = "public"
   description = "Floating IP for project32"
-  port_id     = openstack_networking_port_v2.sharednet2_ports["node1-project32"].id
+  port_id     = openstack_networking_port_v2.sharednet2_ports["node1"].id  # Changed from "node1-project32" to "node1"
 }

@@ -1,0 +1,82 @@
+# Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: reviewer-bot
+  namespace: project32-canary
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: reviewer-bot
+  template:
+    metadata:
+      labels:
+        app: reviewer-bot
+      annotations:
+        prometheus.io/scrape: "{{ .Values.metrics.enabled }}"
+        prometheus.io/port: "{{ .Values.metrics.port }}"
+        prometheus.io/path: "{{ .Values.metrics.path }}"
+    spec:
+      containers:
+        - name: reviewer-bot
+          image: {{ .Values.image.repository }}:{{ .Values.image.tag }}
+          ports:
+            - containerPort: 8000
+            - containerPort: {{ .Values.metrics.port }}
+              name: metrics
+          env:
+            - name: GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: github-credentials
+                  key: token
+            - name: GITHUB_WEBHOOK_ENABLED
+              value: "{{ .Values.github.webhookEnabled }}"
+            - name: GITHUB_POLL_INTERVAL
+              value: "{{ .Values.github.pollInterval }}"
+            - name: GITHUB_REPO_FILTER
+              value: "{{ join "," .Values.github.repositoryFilter }}"
+            - name: MLFLOW_TRACKING_URI
+              value: {{ .Values.mlflow.trackingUri }}
+            - name: MODEL_ALIAS
+              value: {{ .Values.mlflow.modelAlias }}
+            - name: ENVIRONMENT
+              value: "canary"
+            - name: METRICS_ENABLED
+              value: "{{ .Values.metrics.enabled }}"
+            - name: METRICS_PORT
+              value: "{{ .Values.metrics.port }}"
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 5
+---
+# Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: reviewer-bot
+  namespace: project32-canary
+spec:
+  selector:
+    app: reviewer-bot
+  ports:
+    - port: {{ .Values.service.port }}
+      targetPort: 8000
+      name: http
+    - port: {{ .Values.metrics.port }}
+      targetPort: {{ .Values.metrics.port }}
+      name: metrics
+  externalIPs:
+    - {{ .Values.service.externalIP }}

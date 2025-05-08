@@ -1,0 +1,43 @@
+replicaCount: 3
+
+image:
+  repository: registry.kube-system.svc.cluster.local:5000/reviewer-bot
+  tag: production-1.0.0
+
+service:
+  port: 8080
+  externalIP: ""   # Will be set at deployment time
+
+github:
+  webhookEnabled: true
+  pollInterval: 5  # Minutes between polling for new PRs (if webhooks disabled)
+  repositoryFilter: []  # Process PRs from all repos
+
+mlflow:
+  trackingUri: http://mlflow.project32-platform.svc.cluster.local:8000
+  modelAlias: production
+
+metrics:
+  enabled: true
+  port: 9090
+  path: /metrics
+
+resources:
+  limits:
+    cpu: "1000m"
+    memory: "1024Mi"
+  requests:
+    cpu: "500m"
+    memory: "768Mi"
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+reviewLimits:
+  maxFilesPerReview: 30
+  maxLinesPerFile: 500
+  prioritizationEnabled: true

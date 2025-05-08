@@ -1,0 +1,31 @@
+replicaCount: 1
+
+image:
+  repository: registry.kube-system.svc.cluster.local:5000/reviewer-bot
+  tag: canary-1.0.0
+
+service:
+  port: 8080
+  externalIP: ""   # Will be set at deployment time
+
+github:
+  webhookEnabled: true
+  pollInterval: 5  # Minutes between polling for new PRs (if webhooks disabled)
+  repositoryFilter: ["canary-testers/"]  # Only process PRs from these repos
+
+mlflow:
+  trackingUri: http://mlflow.project32-platform.svc.cluster.local:8000
+  modelAlias: canary
+
+metrics:
+  enabled: true
+  port: 9090
+  path: /metrics
+
+resources:
+  limits:
+    cpu: "800m"
+    memory: "768Mi"
+  requests:
+    cpu: "400m"
+    memory: "512Mi"

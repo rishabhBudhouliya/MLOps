@@ -1,0 +1,25 @@
+replicaCount: 1
+
+image:
+  repository: registry.kube-system.svc.cluster.local:5000/reviewer-bot
+  tag: staging-1.0.0
+
+service:
+  port: 8080
+  externalIP: ""   # Will be set at deployment time
+
+github:
+  webhookEnabled: true
+  pollInterval: 2  # Minutes between polling for new PRs (if webhooks disabled)
+
+mlflow:
+  trackingUri: http://mlflow.project32-platform.svc.cluster.local:8000
+  modelAlias: staging
+
+resources:
+  limits:
+    cpu: "500m"
+    memory: "512Mi"
+  requests:
+    cpu: "200m"
+    memory: "256Mi"

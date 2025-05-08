@@ -1,0 +1,66 @@
+# Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: reviewer-bot
+  namespace: project32-staging
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: reviewer-bot
+  template:
+    metadata:
+      labels:
+        app: reviewer-bot
+    spec:
+      containers:
+        - name: reviewer-bot
+          image: {{ .Values.image.repository }}:{{ .Values.image.tag }}
+          ports:
+            - containerPort: 8000
+          env:
+            - name: GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: github-credentials
+                  key: token
+            - name: GITHUB_WEBHOOK_ENABLED
+              value: "{{ .Values.github.webhookEnabled }}"
+            - name: GITHUB_POLL_INTERVAL
+              value: "{{ .Values.github.pollInterval }}"
+            - name: MLFLOW_TRACKING_URI
+              value: {{ .Values.mlflow.trackingUri }}
+            - name: MODEL_ALIAS
+              value: {{ .Values.mlflow.modelAlias }}
+            - name: ENVIRONMENT
+              value: "staging"
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 5
+---
+# Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: reviewer-bot
+  namespace: project32-staging
+spec:
+  selector:
+    app: reviewer-bot
+  ports:
+    - port: {{ .Values.service.port }}
+      targetPort: 8000
+  externalIPs:
+    - {{ .Values.service.externalIP }}
