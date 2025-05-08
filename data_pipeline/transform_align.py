@@ -106,7 +106,7 @@ def process_pr_files(diff_path, comments_path, output_path, debug=False):
         with open(diff_path, 'r', encoding='utf-8') as f_diff:
             diff_text = f_diff.read()
         # Use StringIO because PatchSet expects a file-like object or string iterator
-        parsed_diff = PatchSet(StringIO(diff_text), encoding='utf-8')
+        parsed_diff = PatchSet(StringIO(diff_text))
 
         # Read the comments JSONL file
         with open(comments_path, 'r', encoding='utf-8') as f_comments:

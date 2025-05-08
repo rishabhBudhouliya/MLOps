@@ -7,6 +7,7 @@ data_paths:
   raw: "data/raw/"
   processed: "data/processed/"
   metadata: "data/metadata/" # Path for processed_prs.log relative to RCLONE_REMOTE base
+  remote_raw_data_base: "data/test/"
 rclone_remote_name: "chameleon_s3" # Name of your rclone remote configured with rclone
 
 # Heuristics/Filters for discovering PRs
