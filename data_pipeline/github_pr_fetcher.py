@@ -77,62 +77,52 @@ def fetch_pr_data(g: Github, pr_url: str):
         repo = g.get_repo(f"{owner}/{repo_name}")
         pr = repo.get_pull(pr_number)
 
-        # --- Fetch Unified Diff --- 
-        token = get_github_token() 
+        # --- Fetch diff via REST API ---
+        api_diff_url = f"https://api.github.com/repos/{owner}/{repo_name}/pulls/{pr_number}"
+        token = get_github_token()
         headers = {
-            'Authorization': f'token {token}',
-            'Accept': 'text/html'
+            "Authorization": f"token {token}",
+            "Accept": "application/vnd.github.v3.diff",
+            "User-Agent": "pr-fetcher/0.1 (+https://github.com/your-repo)" # Consider customizing your User-Agent
         }
         # Add a timeout to requests.get as well
-        diff_response = requests.get(pr.diff_url, headers=headers, timeout=60) # Increased timeout slightly
+        diff_response = requests.get(api_diff_url, headers=headers, timeout=60) 
         
-        # Check for 429 specifically from requests, as PyGithub won't catch this
         if diff_response.status_code == 429:
             print("DEBUG: Headers from diff_response (status 429):", diff_response.headers, file=sys.stderr)
-            retry_after_seconds = diff_response.headers.get('Retry-After')
-            if retry_after_seconds:
-                try:
-                    wait_time = int(retry_after_seconds)
-                    print(f"Diff download for {pr_url} got 429 with Retry-After: {wait_time}s. Raising RateLimitExceededException to honor.", file=sys.stderr)
-                    # Pass the original headers from the diff response, which might contain the specific Retry-After
-                    raise RateLimitExceededException(status=429, data={}, headers=diff_response.headers)
-                except ValueError:
-                    print(f"Diff download for {pr_url} got 429 with unparsable Retry-After: {retry_after_seconds}. Signaling for incremental backoff.", file=sys.stderr)
-                    return None, None, "DIFF_DOWNLOAD_RATE_LIMIT_NO_RETRY_AFTER" 
-            else:
-                print(f"Rate limit hit (429) fetching diff for {pr_url} (no Retry-After header). Signaling for incremental backoff.", file=sys.stderr)
-                return None, None, "DIFF_DOWNLOAD_RATE_LIMIT_NO_RETRY_AFTER"
+            # Pass the original headers from the diff response, which might contain Retry-After
+            raise RateLimitExceededException(status=429, data={}, headers=diff_response.headers)
 
-        diff_response.raise_for_status() 
+        diff_response.raise_for_status() # Catch other HTTP errors (404, 500, etc.)
         diff_text = diff_response.text
         if not diff_text:
              print(f"Warning: Diff content for {pr_url} is empty.")
 
         # --- Fetch Review Comments --- 
         print("Fetching review comments...")
-        review_comments_paginated = pr.get_review_comments()
+        review_comments_paginated = pr.get_review_comments() # This can also raise RateLimitExceededException
         comments_list = list(review_comments_paginated)
         print(f"Found {len(comments_list)} review comments.")
 
         return diff_text, comments_list, None
 
-    except RateLimitExceededException: # Explicitly catch and re-raise
-        print(f"Rate limit exceeded during API call within fetch_pr_data for {pr_url}. Re-raising.", file=sys.stderr)
+    except RateLimitExceededException: # Catches RLE from PyGithub calls OR from the new diff logic
+        # The main processing loop's RateLimitExceededException handler will log and manage retries.
         raise # Re-raise the original RateLimitExceededException
     except GithubException as ge:
-        # All other GithubExceptions (Not Found, Server Error, etc.)
+        # All other GithubExceptions (Not Found, Server Error, etc.) from get_repo, get_pull, get_review_comments
         error_msg = f"GitHub API error fetching {pr_url}: {ge}"
         print(error_msg, file=sys.stderr)
         return None, None, error_msg
-    except requests.exceptions.RequestException as req_e:
+    except requests.exceptions.RequestException as req_e: # From the diff requests.get if not 429 or other handled HTTP error
         error_msg = f"Network error fetching diff for {pr_url}: {req_e}"
         print(error_msg, file=sys.stderr)
         return None, None, error_msg
-    except ValueError as ve:
+    except ValueError as ve: # From parse_github_pr_url
         error_msg = f"Error parsing URL {pr_url}: {ve}"
         print(error_msg, file=sys.stderr)
         return None, None, error_msg
-    except Exception as e:
+    except Exception as e: # Catch-all for other unexpected errors
         error_msg = f"Unexpected error fetching data for {pr_url}: {type(e).__name__} - {e}"
         print(error_msg, file=sys.stderr)
         return None, None, error_msg
@@ -407,37 +397,21 @@ if __name__ == "__main__":
 
                 # Fetch data (with rate limit retry loop)
                 # --- Inner retry loop for fetching data for a single PR ---
-                max_diff_fetch_retries = 5 # Max attempts for diff download with incremental backoff
-                current_diff_fetch_retry = 0
-                base_diff_backoff_seconds = 30 # Initial wait for diff download retry
+                # max_diff_fetch_retries and current_diff_fetch_retry are removed as the
+                # specific error message they handled is no longer returned by fetch_pr_data.
+                # RateLimitExceededException will be caught and handled by the outer loop's mechanism.
                 
                 diff_text, comments_list, error_msg = None, None, None # Ensure these are defined before the loop
 
                 while True: # This loop handles retries for a single PR
                     try:
-                        # Reset error_msg at the start of each attempt if it's from a previous failed attempt
-                        # This is important if fetch_pr_data returns an error_msg that's not an exception
-                        if error_msg == "DIFF_DOWNLOAD_RATE_LIMIT_NO_RETRY_AFTER":
-                            error_msg = None 
-
-                        diff_text, comments_list, error_msg = fetch_pr_data(g, pr_url)
-
-                        if error_msg == "DIFF_DOWNLOAD_RATE_LIMIT_NO_RETRY_AFTER":
-                            if current_diff_fetch_retry < max_diff_fetch_retries:
-                                current_diff_fetch_retry += 1
-                                # Exponential backoff with a cap, and some jitter could be added too
-                                wait_time = min(base_diff_backoff_seconds * (2 ** (current_diff_fetch_retry - 1)), 300) 
-                                print(f"Diff download for {pr_url} was rate limited (no Retry-After). "
-                                      f"Retrying ({current_diff_fetch_retry}/{max_diff_fetch_retries}) in {wait_time}s...", file=sys.stderr)
-                                time.sleep(wait_time)
-                                continue # Retry fetching this PR's data (re-call fetch_pr_data)
-                            else:
-                                print(f"Max retries ({max_diff_fetch_retries}) reached for diff download of {pr_url} after rate limiting. "
-                                      "Skipping this PR.", file=sys.stderr)
-                                # This will be caught by the outer PR processing exception handler
-                                raise Exception(f"Failed to download diff for {pr_url} after {max_diff_fetch_retries} retries due to secondary rate limit.")
+                        # error_msg is now only set by fetch_pr_data for non-RLE, non-fatal errors it returns.
+                        # If fetch_pr_data raises an exception (like RLE), it's caught below.
+                        # If it returns an error_msg, it's handled after the call.
                         
-                        elif error_msg: # Any other error message from fetch_pr_data that indicates failure
+                        diff_text, comments_list, error_msg = fetch_pr_data(g, pr_url)
+                        
+                        if error_msg: # Any error message from fetch_pr_data that indicates failure to retrieve data
                              # This will be caught by the outer PR processing exception handler
                              raise Exception(f"fetch_pr_data for {pr_url} returned an error: {error_msg}")
                         
@@ -477,7 +451,8 @@ if __name__ == "__main__":
                         # Loop will continue to retry fetching this PR's data
 
                     # Other GithubException or general exceptions from fetch_pr_data will be caught by the outer try-except for the PR
-                    # (the one that sets repo_batch_had_errors = True)
+                    # (the one that sets repo_batch_had_errors = True) if they are not handled within fetch_pr_data
+                    # and re-raised, or if they are part of the 'error_msg' handling above.
 
                 # --- End of inner retry loop ---
                 # If we exited the loop, it means fetch_pr_data was successful (no error_msg and no unhandled exception)
