@@ -36,8 +36,10 @@ def load_config(config_path):
              raise ValueError("Missing 'data_paths.raw' in config.")
         if 'rclone_remote_name' not in config or not config['rclone_remote_name']: # Keep for rclone
             raise ValueError("Missing or empty 'rclone_remote_name' in config.")
-        if 's3_target_path' not in config or not config['s3_target_path']: # New for S3 path
-            raise ValueError("Missing or empty 's3_target_path' in config for remote uploads.")
+        if 'data_paths' not in config or \
+           'remote_raw_data_base' not in config['data_paths'] or \
+           not config['data_paths']['remote_raw_data_base']:
+            raise ValueError("Missing or empty 'data_paths.remote_raw_data_base' in config for remote uploads.")
         return config
     except FileNotFoundError:
         print(f"Error: Config file not found at {config_path}", file=sys.stderr)
@@ -79,18 +81,24 @@ def fetch_pr_data(g: Github, pr_url: str):
             'Accept': 'application/vnd.github.v3.diff'
         }
         # Add a timeout to requests.get as well
-        diff_response = requests.get(pr.diff_url, headers=headers, timeout=30)
+        diff_response = requests.get(pr.diff_url, headers=headers, timeout=60) # Increased timeout slightly
         
         # Check for 429 specifically from requests, as PyGithub won't catch this
         if diff_response.status_code == 429:
             print("DEBUG: Headers from diff_response (status 429):", diff_response.headers, file=sys.stderr)
-            print(f"Rate limit hit (429) fetching diff for {pr_url} via requests. Re-raising for retry.", file=sys.stderr)
-            # Try to get reset time from headers if available, otherwise raise generic RateLimitExceededException
-            # GitHub typically sends 'X-RateLimit-Reset' header (UTC epoch seconds)
-            # PyGithub's RateLimitExceededException expects 'headers' and 'data'
-            # It's simpler to just raise and let the PyGithub object handle getting reset time
-            # or provide a dummy one for the outer loop to re-query
-            raise RateLimitExceededException(status=429, data={}, headers=diff_response.headers)
+            retry_after_seconds = diff_response.headers.get('Retry-After')
+            if retry_after_seconds:
+                try:
+                    wait_time = int(retry_after_seconds)
+                    print(f"Diff download for {pr_url} got 429 with Retry-After: {wait_time}s. Raising RateLimitExceededException to honor.", file=sys.stderr)
+                    # Pass the original headers from the diff response, which might contain the specific Retry-After
+                    raise RateLimitExceededException(status=429, data={}, headers=diff_response.headers)
+                except ValueError:
+                    print(f"Diff download for {pr_url} got 429 with unparsable Retry-After: {retry_after_seconds}. Signaling for incremental backoff.", file=sys.stderr)
+                    return None, None, "DIFF_DOWNLOAD_RATE_LIMIT_NO_RETRY_AFTER" 
+            else:
+                print(f"Rate limit hit (429) fetching diff for {pr_url} (no Retry-After header). Signaling for incremental backoff.", file=sys.stderr)
+                return None, None, "DIFF_DOWNLOAD_RATE_LIMIT_NO_RETRY_AFTER"
 
         diff_response.raise_for_status() 
         diff_text = diff_response.text
@@ -240,7 +248,7 @@ def upload_repository_batch_to_s3(config: dict, local_repo_data_path: Path, owne
     The S3 path will be <rclone_remote_name>:<s3_target_path>/<owner>/<repo_name>/
     """
     rclone_remote = config['rclone_remote_name']
-    s3_base_path = config['s3_target_path'].strip('/') # Ensure no leading/trailing slashes for joining
+    s3_base_path = config['data_paths']['remote_raw_data_base'].strip('/') # Ensure no leading/trailing slashes for joining
     
     # Corrected remote_path construction
     remote_path = f"{rclone_remote}:{s3_base_path}/{owner}/{repo_name}"
@@ -395,21 +403,87 @@ if __name__ == "__main__":
                 local_comments_path = pr_specific_output_dir / f"{file_basename}_comments.jsonl"
 
                 # Fetch data (with rate limit retry loop)
-                diff_text, comments_list, error_msg = None, None, None
-                while True:
-                    try:
-                        diff_text, comments_list, error_msg = fetch_pr_data(g, pr_url)
-                        if error_msg:
-                             raise Exception(f"fetch_pr_data returned an error: {error_msg}")
-                        break # Success from fetch_pr_data
-                    except RateLimitExceededException:
-                        reset_time = g.get_rate_limit().core.reset
-                        wait_seconds = max((reset_time - datetime.datetime.now(datetime.timezone.utc)).total_seconds() + 10, 15)
-                        print(f"Rate limit hit for {pr_url}. Waiting for {wait_seconds:.0f} seconds until {reset_time}...")
-                        time.sleep(wait_seconds)
-                    # Other GithubException or general exceptions from fetch_pr_data will be caught by the outer try-except
+                # --- Inner retry loop for fetching data for a single PR ---
+                max_diff_fetch_retries = 5 # Max attempts for diff download with incremental backoff
+                current_diff_fetch_retry = 0
+                base_diff_backoff_seconds = 30 # Initial wait for diff download retry
+                
+                diff_text, comments_list, error_msg = None, None, None # Ensure these are defined before the loop
 
-                # Save locally
+                while True: # This loop handles retries for a single PR
+                    try:
+                        # Reset error_msg at the start of each attempt if it's from a previous failed attempt
+                        # This is important if fetch_pr_data returns an error_msg that's not an exception
+                        if error_msg == "DIFF_DOWNLOAD_RATE_LIMIT_NO_RETRY_AFTER":
+                            error_msg = None 
+
+                        diff_text, comments_list, error_msg = fetch_pr_data(g, pr_url)
+
+                        if error_msg == "DIFF_DOWNLOAD_RATE_LIMIT_NO_RETRY_AFTER":
+                            if current_diff_fetch_retry < max_diff_fetch_retries:
+                                current_diff_fetch_retry += 1
+                                # Exponential backoff with a cap, and some jitter could be added too
+                                wait_time = min(base_diff_backoff_seconds * (2 ** (current_diff_fetch_retry - 1)), 300) 
+                                print(f"Diff download for {pr_url} was rate limited (no Retry-After). "
+                                      f"Retrying ({current_diff_fetch_retry}/{max_diff_fetch_retries}) in {wait_time}s...", file=sys.stderr)
+                                time.sleep(wait_time)
+                                continue # Retry fetching this PR's data (re-call fetch_pr_data)
+                            else:
+                                print(f"Max retries ({max_diff_fetch_retries}) reached for diff download of {pr_url} after rate limiting. "
+                                      "Skipping this PR.", file=sys.stderr)
+                                # This will be caught by the outer PR processing exception handler
+                                raise Exception(f"Failed to download diff for {pr_url} after {max_diff_fetch_retries} retries due to secondary rate limit.")
+                        
+                        elif error_msg: # Any other error message from fetch_pr_data that indicates failure
+                             # This will be caught by the outer PR processing exception handler
+                             raise Exception(f"fetch_pr_data for {pr_url} returned an error: {error_msg}")
+                        
+                        # If no error_msg and no exception, it means success
+                        break # Success from fetch_pr_data, exit retry loop for this PR
+
+                    except RateLimitExceededException as rle_inner: 
+                        # This is for PRIMARY GitHub API rate limits or if fetch_pr_data raised it due to Retry-After on diff
+                        print(f"RateLimitExceededException caught for {pr_url}. Determining wait time...", file=sys.stderr)
+                        
+                        # Check if the exception's headers (potentially from diff_response) have Retry-After
+                        specific_retry_after = None
+                        if rle_inner.headers and 'Retry-After' in rle_inner.headers:
+                            try:
+                                specific_retry_after = int(rle_inner.headers['Retry-After'])
+                                print(f"RateLimitExceededException for {pr_url} included Retry-After: {specific_retry_after}s.", file=sys.stderr)
+                            except ValueError:
+                                print(f"RateLimitExceededException for {pr_url} had unparsable Retry-After: {rle_inner.headers['Retry-After']}.", file=sys.stderr)
+                        
+                        if specific_retry_after is not None and specific_retry_after > 0:
+                            wait_seconds = specific_retry_after + 5 # Add a small buffer
+                            reset_time_for_log = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=wait_seconds)
+                            print(f"Waiting {wait_seconds:.0f}s based on specific Retry-After header from exception for {pr_url} (until ~{reset_time_for_log})...")
+                        else:
+                            # Fallback to general GitHub API rate limit reset time
+                            print(f"No specific Retry-After in RLE for {pr_url} or it was invalid. Using general GitHub API reset time.", file=sys.stderr)
+                            try:
+                                rate_limit_info = g.get_rate_limit().core # core, search, graphql, etc.
+                                reset_time = rate_limit_info.reset
+                            except Exception as e_rl:
+                                print(f"Could not get primary rate limit info: {e_rl}. Waiting default 120s.", file=sys.stderr)
+                                reset_time = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=120)
+                            wait_seconds = max((reset_time - datetime.datetime.now(datetime.timezone.utc)).total_seconds() + 15, 30) # Add buffer, min wait
+                        
+                        print(f"Overall rate limit policy for {pr_url}: Waiting for {wait_seconds:.0f} seconds...")
+                        time.sleep(wait_seconds)
+                        # Loop will continue to retry fetching this PR's data
+
+                    # Other GithubException or general exceptions from fetch_pr_data will be caught by the outer try-except for the PR
+                    # (the one that sets repo_batch_had_errors = True)
+
+                # --- End of inner retry loop ---
+                # If we exited the loop, it means fetch_pr_data was successful (no error_msg and no unhandled exception)
+                
+                # Save locally (ensure diff_text is not None if we got here)
+                if diff_text is None: # Should not happen if loop logic is correct and fetch_pr_data succeeded
+                    print(f"Error: diff_text is None for {pr_url} after fetch attempts. Skipping save.", file=sys.stderr)
+                    raise Exception(f"diff_text was None for {pr_url} unexpectedly.")
+
                 print(f"Saving diff locally to {local_diff_path}")
                 with open(local_diff_path, 'w', encoding='utf-8') as f_diff:
                     f_diff.write(diff_text)
