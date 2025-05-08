@@ -81,7 +81,7 @@ def fetch_pr_data(g: Github, pr_url: str):
         token = get_github_token() 
         headers = {
             'Authorization': f'token {token}',
-            'Accept': 'application/vnd.github.v3.diff'
+            'Accept': 'text/html'
         }
         # Add a timeout to requests.get as well
         diff_response = requests.get(pr.diff_url, headers=headers, timeout=60) # Increased timeout slightly
