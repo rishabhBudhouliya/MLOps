@@ -83,6 +83,7 @@ def fetch_pr_data(g: Github, pr_url: str):
         
         # Check for 429 specifically from requests, as PyGithub won't catch this
         if diff_response.status_code == 429:
+            print("DEBUG: Headers from diff_response (status 429):", diff_response.headers, file=sys.stderr)
             print(f"Rate limit hit (429) fetching diff for {pr_url} via requests. Re-raising for retry.", file=sys.stderr)
             # Try to get reset time from headers if available, otherwise raise generic RateLimitExceededException
             # GitHub typically sends 'X-RateLimit-Reset' header (UTC epoch seconds)
