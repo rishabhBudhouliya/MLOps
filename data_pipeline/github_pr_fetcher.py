@@ -32,12 +32,15 @@ def load_config(config_path):
         # Basic validation
         if not config:
             raise ValueError("Config file is empty.")
-        if 'data_paths' not in config or 'raw' not in config['data_paths']:
+        # Ensure data_paths itself exists before trying to access keys within it
+        if 'data_paths' not in config:
+            raise ValueError("Missing 'data_paths' section in config.")
+        if 'raw' not in config['data_paths']:
              raise ValueError("Missing 'data_paths.raw' in config.")
-        if 'rclone_remote_name' not in config or not config['rclone_remote_name']: # Keep for rclone
+        if 'rclone_remote_name' not in config or not config['rclone_remote_name']:
             raise ValueError("Missing or empty 'rclone_remote_name' in config.")
-        if 'data_paths' not in config or \
-           'remote_raw_data_base' not in config['data_paths'] or \
+        # Corrected validation: Check for remote_raw_data_base within data_paths
+        if 'remote_raw_data_base' not in config['data_paths'] or \
            not config['data_paths']['remote_raw_data_base']:
             raise ValueError("Missing or empty 'data_paths.remote_raw_data_base' in config for remote uploads.")
         return config
@@ -587,7 +590,7 @@ if __name__ == "__main__":
     if overall_failure_count > 0: # If any PR failed in *this specific run*
         print(f"Checkpoint file {checkpoint_file_path} will be kept due to {overall_failure_count} failures in this run.")
         can_delete_checkpoint = False
-    else: # No failures in this run, now check if all input PRs are covered
+    else: # No failures in this run, now check if all input PRs are in the checkpoint
         if num_successfully_processed_ever >= num_total_input_prs:
             # Double check: every single PR from input must be in the 'all_prs_fully_processed_in_this_run_or_before' set
             all_required_prs_are_processed = True
