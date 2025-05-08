@@ -45,48 +45,48 @@ def find_hunk_and_line_for_comment(parsed_diff, comment_path, comment_pos):
     """
     Finds the specific hunk and line object in the parsed diff corresponding
     to a comment path and position (1-based index within the file's diff).
-    Returns a tuple (hunk, line) or (None, None) if not found.
+    Returns a tuple (patched_file, hunk, line) or (None, None, None) if not found.
     """
     if not comment_path or comment_pos is None or comment_pos <= 0:
         print(f"Debug: Invalid comment_path ('{comment_path}') or comment_pos ({comment_pos})")
-        return None, None
+        return None, None, None
 
-    target_file = None
+    patched_file_obj = None # This will store the PatchedFile object
     # Find the file in the parsed diff that matches the comment's path
-    for file_diff in parsed_diff:
+    for file_diff in parsed_diff: # file_diff is a PatchedFile
         # unidiff paths might start with 'a/' or 'b/' - try to match flexibly
         if file_diff.source_file == comment_path or \
            file_diff.target_file == comment_path or \
            file_diff.path == comment_path: # path attribute combines source/target heuristically
-            target_file = file_diff
+            patched_file_obj = file_diff
             break
         # Fallback: Check if the comment path is a suffix of the unidiff path
         # (e.g., comment path 'src/main.py', unidiff path 'b/src/main.py')
         elif comment_path and (file_diff.source_file.endswith('/' + comment_path) or \
                               file_diff.target_file.endswith('/' + comment_path)):
              print(f"Debug: Matched comment path '{comment_path}' as suffix of diff path '{file_diff.path}'")
-             target_file = file_diff
+             patched_file_obj = file_diff
              break
 
-    if not target_file:
+    if not patched_file_obj:
         print(f"Debug: Could not find file matching path '{comment_path}' in the diff.")
-        return None, None
+        return None, None, None
 
     # Position in comments refers to the line number within the *diff view* of that file,
     # counting only added and context lines. It's a 1-based index.
     current_pos_count = 0
-    for hunk in target_file:
-        for line in hunk:
+    for hunk in patched_file_obj: # Iterate through hunks of the found PatchedFile
+        for line in hunk: # Iterate through lines within the hunk
             # Only count lines that appear in the final diff view that positions usually refer to
             if line.is_context or line.is_added:
                 current_pos_count += 1
                 if current_pos_count == comment_pos:
-                    # Found the line matching the 1-based position
-                    return hunk, line
+                    # Found the line, return the PatchedFile, Hunk, and Line
+                    return patched_file_obj, hunk, line
 
     # If loop completes without finding the position
     print(f"Debug: Comment position {comment_pos} not found in file '{comment_path}' (max pos checked: {current_pos_count}). This might indicate an outdated comment or position mismatch.")
-    return None, None
+    return None, None, None
 
 def get_line_type(line):
     """Determines the type of a diff line."""
@@ -106,6 +106,7 @@ def process_pr_files(diff_path, comments_path, output_path, debug=False):
         with open(diff_path, 'r', encoding='utf-8') as f_diff:
             diff_text = f_diff.read()
         # Use StringIO because PatchSet expects a file-like object or string iterator
+        # diff_text is already a string, so no encoding needed for PatchSet here.
         parsed_diff = PatchSet(StringIO(diff_text))
 
         # Read the comments JSONL file
@@ -138,9 +139,10 @@ def process_pr_files(diff_path, comments_path, output_path, debug=False):
                     continue
 
                 # Find the corresponding line in the parsed diff
-                hunk, diff_line = find_hunk_and_line_for_comment(parsed_diff, comment_path, comment_pos)
+                # Now expecting patched_file, hunk, and diff_line
+                matched_patched_file, hunk, diff_line = find_hunk_and_line_for_comment(parsed_diff, comment_path, comment_pos)
 
-                if hunk and diff_line:
+                if matched_patched_file and hunk and diff_line: # Check all three
                     line_type = get_line_type(diff_line)
                     # Content remove leading '+' '-' ' '
                     line_content = diff_line.value
@@ -162,8 +164,8 @@ def process_pr_files(diff_path, comments_path, output_path, debug=False):
                         "diff_line_source_no": diff_line.source_line_no,
                         "diff_line_target_no": diff_line.target_line_no,
                         "diff_hunk_header": hunk.section_header.strip(),
-                        "diff_file_source": hunk.source_file, # File path from unidiff
-                        "diff_file_target": hunk.target_file, # File path from unidiff
+                        "diff_file_source": matched_patched_file.source_file, # Use PatchedFile attribute
+                        "diff_file_target": matched_patched_file.target_file, # Use PatchedFile attribute
                     }
                     aligned_data.append(aligned_record)
                 else:
