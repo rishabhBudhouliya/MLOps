@@ -258,13 +258,18 @@ def upload_repository_batch_to_s3(config: dict, local_repo_data_path: Path, owne
 
     cmd = [
         "rclone", "copy", "--retries", "3", "--retries-sleep", "10s",
+        "--progress",
+        "--transfers=32",
+        "--checkers=16",
+        "--multi-thread-streams=4",
+        "--fast-list",
         str(source_path_for_rclone), # Source: local directory for the repo
         remote_path # Destination: S3 path for the repo
     ]
     print(f"Attempting to upload batch for {owner}/{repo_name} to {remote_path} using command: {' '.join(cmd)}")
     try:
         # Add timeout to rclone command
-        result = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=300) # 5 min timeout
+        result = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=1800) # 30 min timeout
         if result.returncode == 0:
             print(f"Successfully uploaded batch for {owner}/{repo_name} to {remote_path}")
             # Potentially list files:
