@@ -144,6 +144,7 @@ def save_comments_to_jsonl(comments, filename):
                     'commit_id': comment.commit_id,
                     'original_commit_id': comment.original_commit_id,
                     'diff_hunk': comment.diff_hunk,
+                    'side': comment.side,            # "RIGHT" or "LEFT"
                     'created_at': comment.created_at.isoformat() if comment.created_at else None,
                     'updated_at': comment.updated_at.isoformat() if comment.updated_at else None,
                     'html_url': comment.html_url,

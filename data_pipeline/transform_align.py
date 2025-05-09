@@ -164,6 +164,14 @@ def process_pr_files(diff_path, comments_path, output_path, debug=False):
                         "diff_line_source_no": diff_line.source_line_no,
                         "diff_line_target_no": diff_line.target_line_no,
                         "diff_hunk_header": hunk.section_header.strip(),
+                        "diff": comment.get('diff_hunk'),        # full diff hunk header
+                        "side": comment.get('side'),            # LEFT or RIGHT from comment
+                        # Compute 0-based offset within this hunk based on side
+                        "line_offset": (
+                            (diff_line.target_line_no - hunk.target_start)
+                            if (diff_line.is_context or diff_line.is_added)
+                            else (diff_line.source_line_no - hunk.source_start)
+                        ),
                         "diff_file_source": matched_patched_file.source_file, # Use PatchedFile attribute
                         "diff_file_target": matched_patched_file.target_file, # Use PatchedFile attribute
                     }

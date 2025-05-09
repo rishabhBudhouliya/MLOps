@@ -163,8 +163,8 @@ if __name__ == "__main__":
         ]
         if args.debug:
             fetcher_args.append("--debug")
-        # Fetcher's --local-output-dir handles saving locally.
-        # Upload logic is removed from fetcher and handled by load_data.py later.
+        if args.local: # If the main pipeline is running in local mode
+            fetcher_args.append("--skip-remote-upload") # Tell fetcher to also skip its S3 uploads
 
         step2_success = run_script("github_pr_fetcher.py", fetcher_args)
 
@@ -191,31 +191,46 @@ if __name__ == "__main__":
             # Don't upload log if transform failed
             sys.exit(1)
 
-        # --- Step 4: Load Transformed Data ---
-        print("\n" + "="*10 + " STEP 4: Load Transformed Data " + "="*10)
+        # --- Step 3.5: Build Bronze Layer ---
+        print("\n" + "="*10 + " STEP 3.5: Build Bronze Layer " + "="*10)
+        bronze_dir = Path("bronze")
+        step3_5_success = run_script("build_bronze.py", ["--input-dir", str(transformed_data_dir), "--output-dir", str(bronze_dir)])
+        if not step3_5_success:
+            print("Pipeline failed at Step 3.5: Build Bronze Layer. Skipping subsequent steps.")
+            sys.exit(1)
+
+        # --- Step 3.6: Build Silver Layer ---
+        print("\n" + "="*10 + " STEP 3.6: Build Silver Layer " + "="*10)
+        silver_dir = Path("dataset/v1")
+        step3_6_success = run_script("build_silver.py", ["--bronze-dir", str(bronze_dir), "--output-dir", str(silver_dir)])
+        if not step3_6_success:
+            print("Pipeline failed at Step 3.6: Build Silver Layer. Skipping subsequent steps.")
+            sys.exit(1)
+
+        # --- Step 4: Load Silver Data ---
+        print("\n" + "="*10 + " STEP 4: Load Silver Data " + "="*10)
         if args.local:
-            print("Running in local mode. Skipping remote upload of transformed data.")
-            print(f"Transformed data is available locally at: {transformed_data_dir}")
+            print("Running in local mode. Skipping remote upload of silver data.")
+            print(f"Silver data is available locally at: {silver_dir}")
             step4_success = True # Consider local mode a success here
         else:
-            # Check if there's actually transformed data to upload
-            if not any(transformed_data_dir.iterdir()):
-                 print(f"Transformed data directory '{transformed_data_dir}' is empty. Skipping upload.")
-                 step4_success = True
+            # Check if there's actually silver data to upload
+            if not any(silver_dir.iterdir()):
+                print(f"Silver directory '{silver_dir}' is empty. Skipping upload.")
+                step4_success = True
             else:
-                 loader_args = [
-                     "--config", config_path,
-                     "--input-dir", str(transformed_data_dir),
-                 ]
-                 if args.debug:
-                     loader_args.append("--debug")
+                loader_args = [
+                    "--config", config_path,
+                    "--input-dir", str(silver_dir),
+                ]
+                if args.debug:
+                    loader_args.append("--debug")
 
-                 step4_success = run_script("load_data.py", loader_args)
+                step4_success = run_script("load_data.py", loader_args)
 
-                 if not step4_success:
-                      print("Pipeline failed at Step 4: Load Transformed Data.")
-                      # Don't upload log if load failed
-                      sys.exit(1)
+                if not step4_success:
+                     print("Pipeline failed at Step 4: Load Silver Data.")
+                     sys.exit(1)
 
     # --- Step 5: Upload Updated Log File ---
     # This runs if Step 1 was successful, AND subsequent steps that ran also succeeded.
