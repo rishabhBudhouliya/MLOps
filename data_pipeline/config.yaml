@@ -1,14 +1,19 @@
 # config.yaml
 github_repositories:
   - "jenkinsci/git-client-plugin"
+  - "kubernetes/kubernetes"
+  - "prometheus/prometheus"
+  - "etcd-io/etcd"
+  - "microsoft/vscode"
+  - "vercel/next.js"
 
 # Other config...
 data_paths:
-  raw: "data/raw/"
-  processed: "data/processed/"
-  metadata: "data/metadata/" # Path for processed_prs.log relative to RCLONE_REMOTE base
-  remote_raw_data_base: "data/test/"
-rclone_remote_name: "chameleon_s3" # Name of your rclone remote configured with rclone
+  raw: "object-persist-group32/data/raw/"
+  processed: "object-persist-group32/data/processed/"
+  metadata: "object-persist-group32/data/metadata/" # Path for processed_prs.log relative to RCLONE_REMOTE base
+  remote_raw_data_base: "object-persist-group32/data/raw/"
+rclone_remote_name: "chi_tacc" # Name of your rclone remote configured with rclone
 
 # Heuristics/Filters for discovering PRs
 filters:
