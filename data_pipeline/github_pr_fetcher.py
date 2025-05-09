@@ -607,11 +607,15 @@ if __name__ == "__main__":
     print("="*40)
 
     if overall_failure_count > 0:
-        print("Completed with errors.")
-        sys.exit(1)
-    else:
-        # Check if all input PRs are in the checkpoint, even if no *new* ones were processed this run
-        # This means a "successful" completion even if all were skipped due to prior processing.
+        if overall_success_count > 0: # Some succeeded in this run, some failed
+            print(f"Completed with {overall_failure_count} errors, but {overall_success_count} PRs were successfully processed and checkpointed in this run.")
+            print("Proceeding with a partial dataset from this fetching stage.")
+            sys.exit(0) # Signal partial success to the orchestrator
+        else: # All attempts in this run resulted in failure (overall_success_count is 0)
+            print(f"Completed with {overall_failure_count} errors, and NO PRs were successfully processed and checkpointed in this run.")
+            print("Halting pipeline as the fetching stage produced no usable new data.")
+            sys.exit(1) # Signal failure to the orchestrator
+    else: # overall_failure_count == 0 (no errors in this specific run)
         all_input_covered_by_checkpoint = True
         for req_owner, req_repo, req_pr_num in all_input_prs_parsed_details:
             if not is_pr_processed(req_owner, req_repo, req_pr_num, processed_prs_by_repo_checkpoint):
@@ -621,5 +625,5 @@ if __name__ == "__main__":
              print("Completed successfully. All input PRs are accounted for in the checkpoint.")
              sys.exit(0)
         else:
-             print("Completed (no new errors in this run), but not all input PRs are in the checkpoint yet.")
-             sys.exit(1) # Technically not an error IN THIS RUN, but the overall task isn't complete.
+             print("Completed successfully for this run (no new errors). However, not all input PRs are in the checkpoint yet. Further runs may be needed.")
+             sys.exit(0)
