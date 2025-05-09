@@ -6,6 +6,17 @@ github_repositories:
   - "etcd-io/etcd"
   - "microsoft/vscode"
   - "vercel/next.js"
+  - "etcd-io/etcd"
+  - "microsoft/vscode"
+  - "facebook/react"
+  - "electron/electron"
+  - "tensorflow/tensorflow"
+  - "apache/kafka"
+  - "angular/angular"
+  - "apache/arrow"
+  - "jaegertracing/jaeger"
+  - "grafana/grafana"
+
 
 # Other config...
 data_paths:
