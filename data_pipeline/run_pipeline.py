@@ -66,24 +66,12 @@ def run_script(script_name, args_list):
     print("-"*20 + f" Running {script_name} " + "-"*20)
     print(f"Command: {' '.join(command)}")
     try:
-        # Use check=True to automatically raise CalledProcessError on non-zero exit
-        process = subprocess.run(command, check=True, text=True, capture_output=True)
-        print(f"--- {script_name} Output ---")
-        if process.stdout:
-            print(process.stdout)
-        if process.stderr:
-            print(process.stderr, file=sys.stderr) # Print script's stderr to orchestrator's stderr
-        print(f"--- End {script_name} Output ---")
+        # Run the script and let its stdout/stderr stream directly to console
+        subprocess.run(command, check=True, text=True)
         print(f"{script_name} completed successfully.")
         return True
     except subprocess.CalledProcessError as e:
         print(f"Error: {script_name} failed with exit code {e.returncode}", file=sys.stderr)
-        print(f"--- {script_name} Output (Error) ---", file=sys.stderr)
-        if e.stdout:
-             print(e.stdout, file=sys.stderr)
-        if e.stderr:
-             print(e.stderr, file=sys.stderr)
-        print(f"--- End {script_name} Output (Error) ---", file=sys.stderr)
         return False
     except Exception as e:
         print(f"Failed to execute {script_name}: {e}", file=sys.stderr)
