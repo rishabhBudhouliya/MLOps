@@ -8,14 +8,17 @@ import glob
 import gzip
 import matplotlib.pyplot as plt # Added for explicit figure creation
 
-# --- Determine script directory for robust path construction ---
+# --- Determine script directory for robust path construction for files COPIED into the image ---
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# --- Configuration (Paths are now absolute) ---
+# --- Configuration ---
+# Path for a file that IS copied into the Docker image
 PROCESSED_PRS_FILE_PATH = os.path.join(SCRIPT_DIR, "../new_prs_to_process.txt")
-SFT_DATASET_FILE_PATH = os.path.join(SCRIPT_DIR, "../dataset/v1/train.jsonl.gz")
-DATASET_CARD_PATH = os.path.join(SCRIPT_DIR, "../dataset/v1/dataset_card.md")
-# BRONZE_DATA_PATH = os.path.join(SCRIPT_DIR, "../bronze/") # REMOVED
+
+# Paths for data that will be ACCESSED VIA A MOUNTED VOLUME on the VM
+SFT_DATASET_FILE_PATH = "/mnt/object/data/processed/train.jsonl.gz"
+DATASET_CARD_PATH = "/mnt/object/data/processed/dataset_card.md"
+
 DEFAULT_SAMPLE_SIZE = 5 # Number of comments to sample from bronze data
 
 # --- Helper Functions ---
@@ -59,7 +62,7 @@ def load_sft_dataset(file_path):
     """Loads the SFT dataset from a JSONL file (can be gzipped)."""
     data = []
     if not os.path.exists(file_path):
-        st.warning(f"Warning: SFT dataset file not found at {file_path}")
+        st.warning(f"Warning: SFT dataset file not found at {file_path}. Ensure the volume is mounted correctly and the path is accessible within the container.")
         return pd.DataFrame()
     
     try:
@@ -81,7 +84,7 @@ def load_sft_dataset(file_path):
 def load_markdown_file(file_path):
     """Loads a markdown file and returns its content as a string."""
     if not os.path.exists(file_path):
-        st.warning(f"Markdown file not found: {file_path}")
+        st.warning(f"Markdown file not found: {file_path}. Ensure the volume is mounted correctly and the path is accessible within the container.")
         return None
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
@@ -98,7 +101,7 @@ def load_markdown_file(file_path):
 def load_sample_sft_data(sft_file_path, sample_size=DEFAULT_SAMPLE_SIZE):
     """Loads a sample of records from the SFT training data file (train.jsonl.gz)."""
     if not os.path.exists(sft_file_path):
-        st.warning(f"SFT training data file not found: {sft_file_path}")
+        st.warning(f"SFT training data file for sampling not found: {sft_file_path}. Ensure the volume is mounted correctly.")
         return []
 
     records_sample = []
@@ -128,7 +131,6 @@ with st.spinner("Loading data..."):
     processed_prs_df, total_prs_processed, repo_counts = load_processed_prs(PROCESSED_PRS_FILE_PATH)
     sft_df = load_sft_dataset(SFT_DATASET_FILE_PATH)
     dataset_card_content = load_markdown_file(DATASET_CARD_PATH)
-    # bronze_repos = discover_bronze_repositories(BRONZE_DATA_PATH) # REMOVED
 
 # --- Display Metrics ---
 st.header("📊 Overall Summary")
@@ -144,7 +146,7 @@ st.header("📝 Dataset Card")
 if dataset_card_content:
     st.markdown(dataset_card_content, unsafe_allow_html=True) 
 else:
-    st.info(f"Dataset card ({os.path.basename(DATASET_CARD_PATH)}) not found, empty, or error during loading. Check path: {DATASET_CARD_PATH}")
+    st.info(f"Dataset card ({os.path.basename(DATASET_CARD_PATH)}) not found, empty, or error during loading. Check mount and path: {DATASET_CARD_PATH}")
 
 st.markdown("---")
 
@@ -259,7 +261,7 @@ if sampled_sft_records:
                 disabled=True
             )
 else:
-    st.info(f"No sample records to display from {os.path.basename(SFT_DATASET_FILE_PATH)}. File might be empty or not found at {SFT_DATASET_FILE_PATH}.")
+    st.info(f"No sample records to display from {os.path.basename(SFT_DATASET_FILE_PATH)}. File might be empty, not found at {SFT_DATASET_FILE_PATH}, or error during loading. Check mount.")
 
 # --- Sidebar ---
 st.sidebar.header("About")
@@ -268,11 +270,10 @@ st.sidebar.info(
     "the generated SFT dataset (from train.jsonl.gz), and allows browsing sample records from the SFT training data."
 )
 st.sidebar.markdown("---")
-st.sidebar.header("Data File Paths")
-st.sidebar.markdown(f"**Processed PRs Log:** `{PROCESSED_PRS_FILE_PATH}`")
-st.sidebar.markdown(f"**SFT Train Dataset:** `{SFT_DATASET_FILE_PATH}`")
-st.sidebar.markdown(f"**Dataset Card:** `{DATASET_CARD_PATH}`")
-# st.sidebar.markdown(f"**Bronze Layer Data:** `{BRONZE_DATA_PATH}`") # REMOVED
+st.sidebar.header("Data File Paths (as configured in app)")
+st.sidebar.markdown(f"**Processed PRs Log (from image):** `{PROCESSED_PRS_FILE_PATH}`")
+st.sidebar.markdown(f"**SFT Train Dataset (from mount):** `{SFT_DATASET_FILE_PATH}`")
+st.sidebar.markdown(f"**Dataset Card (from mount):** `{DATASET_CARD_PATH}`")
 
 if st.sidebar.button("Reload All Data & Clear Cache"):
     st.cache_data.clear()

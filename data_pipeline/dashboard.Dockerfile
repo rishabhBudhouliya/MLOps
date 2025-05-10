@@ -16,12 +16,9 @@ RUN pip install --no-cache-dir --trusted-host pypi.python.org -r requirements.tx
 # This assumes your dashboard code is in a 'dashboard' subdirectory relative to the Dockerfile
 COPY ./dashboard /app/dashboard
 
-# Copy necessary data files and directories for the dashboard
-# The paths in app.py are relative to SCRIPT_DIR (which will be /app/dashboard),
-# so these target paths inside the container need to align with those relative lookups (e.g., ../dataset/v1).
+# Copy the PRs log file. This is still copied into the image.
+# app.py expects this at /app/new_prs_to_process.txt based on SCRIPT_DIR + ../new_prs_to_process.txt
 COPY ./new_prs_to_process.txt /app/new_prs_to_process.txt
-COPY ./dataset/v1 /app/dataset/v1
-# COPY ./bronze /app/bronze # REMOVED - Bronze data is no longer directly used by the dashboard UI in this way
 
 # Expose Streamlit's default port
 EXPOSE 8501
