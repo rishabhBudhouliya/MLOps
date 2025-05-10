@@ -20,10 +20,10 @@ COPY ./dashboard /app/dashboard
 # app.py expects this at /app/new_prs_to_process.txt based on SCRIPT_DIR + ../new_prs_to_process.txt
 COPY ./new_prs_to_process.txt /app/new_prs_to_process.txt
 
-# Expose Streamlit's default port
-EXPOSE 8501
+# Expose the new port for Streamlit
+EXPOSE 8888
 
-# Command to run the Streamlit application
+# Command to run the Streamlit application on the new port
 # --server.enableCORS=false can be useful if you face CORS issues, though often not needed.
 # Using 0.0.0.0 makes the server accessible externally from the container.
-CMD ["streamlit", "run", "dashboard/app.py", "--server.port=8501", "--server.address=0.0.0.0"] 
+CMD ["streamlit", "run", "dashboard/app.py", "--server.port=8888", "--server.address=0.0.0.0"] 
