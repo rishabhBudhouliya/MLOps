@@ -1,5 +1,5 @@
 resource "openstack_networking_network_v2" "private_net" {
-  name                  = "private-net-project32"
+  name                  = "private-net-mlops-project32"
   port_security_enabled = false
 }
 
