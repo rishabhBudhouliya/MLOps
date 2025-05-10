@@ -10,6 +10,7 @@ RUN wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86
 
 USER ${NB_UID}
 RUN pip install --pre --no-cache-dir \
+    'bert_score' \
     'transformers' \
     'datasets' \
     'torchinfo' \
