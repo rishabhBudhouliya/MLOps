@@ -16,10 +16,6 @@ RUN pip install --no-cache-dir --trusted-host pypi.python.org -r requirements.tx
 # This assumes your dashboard code is in a 'dashboard' subdirectory relative to the Dockerfile
 COPY ./dashboard /app/dashboard
 
-# Copy the PRs log file. This is still copied into the image.
-# app.py expects this at /app/new_prs_to_process.txt based on SCRIPT_DIR + ../new_prs_to_process.txt
-COPY ./new_prs_to_process.txt /app/new_prs_to_process.txt
-
 # Expose the new port for Streamlit
 EXPOSE 8888
 

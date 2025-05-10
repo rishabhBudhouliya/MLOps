@@ -12,10 +12,10 @@ import matplotlib.pyplot as plt # Added for explicit figure creation
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # --- Configuration ---
-# Path for a file that IS copied into the Docker image
-PROCESSED_PRS_FILE_PATH = os.path.join(SCRIPT_DIR, "../new_prs_to_process.txt")
+# Path for the comprehensive PR log, ACCESSED VIA A MOUNTED VOLUME
+PROCESSED_PRS_FILE_PATH = "/mnt/object/data/metadata/processed_prs.log"
 
-# Paths for data that will be ACCESSED VIA A MOUNTED VOLUME on the VM
+# Paths for SFT data and dataset card, also ACCESSED VIA A MOUNTED VOLUME
 SFT_DATASET_FILE_PATH = "/mnt/object/data/processed/train.jsonl.gz"
 DATASET_CARD_PATH = "/mnt/object/data/processed/dataset_card.md"
 
@@ -28,6 +28,10 @@ def extract_repo_from_url(url):
     match = re.search(r"github\.com/([^/]+/[^/]+)/pull/\d+", url)
     if match:
         return match.group(1)
+    # Handle cases where URL might start with @, e.g., from user input
+    match_at = re.search(r"@https?://github\.com/([^/]+/[^/]+)/pull/\d+", url)
+    if match_at:
+        return match_at.group(1)
     return None
 
 @st.cache_data # Cache data loading for performance
@@ -36,23 +40,33 @@ def load_processed_prs(file_path):
     prs_df = pd.DataFrame(columns=['url', 'repository'])
     processed_pr_urls = []
     if not os.path.exists(file_path):
-        st.warning(f"Warning: Processed PRs file not found at {file_path}")
+        st.warning(f"Warning: Processed PRs log file not found at {file_path}. Ensure the volume is mounted correctly and the path is accessible within the container.")
         return pd.DataFrame(columns=['url']), 0, Counter()
 
     try:
-        with open(file_path, 'r') as f:
-            processed_pr_urls = [line.strip() for line in f if line.strip()]
+        with open(file_path, 'r', encoding='utf-8') as f:
+            # Strip leading/trailing whitespace and potential leading '@' characters
+            processed_pr_urls = [line.strip().lstrip('@') for line in f if line.strip()]
         
         if not processed_pr_urls:
             # st.info(f"No PRs found in {file_path}") # Reduced verbosity
             return pd.DataFrame(columns=['url']), 0, Counter()
 
         repos = [extract_repo_from_url(url) for url in processed_pr_urls]
-        prs_df['url'] = processed_pr_urls
-        prs_df['repository'] = [repo if repo else "Unknown" for repo in repos]
+        # Filter out None repos that might result from non-matching lines if any
+        valid_repos = [repo for repo in repos if repo is not None]
         
-        repo_counts = Counter(prs_df['repository'])
-        return prs_df, len(processed_pr_urls), repo_counts
+        # Create DataFrame with only valid PR URLs that had a repo extracted
+        valid_pr_urls = [url for url, repo in zip(processed_pr_urls, repos) if repo is not None]
+        
+        if not valid_pr_urls:
+             return pd.DataFrame(columns=['url', 'repository']), 0, Counter()
+
+        prs_df['url'] = valid_pr_urls
+        prs_df['repository'] = valid_repos
+        
+        repo_counts = Counter(valid_repos)
+        return prs_df, len(valid_pr_urls), repo_counts # Count only valid PRs
     except Exception as e:
         st.error(f"Error loading processed PRs from {file_path}: {e}")
         return pd.DataFrame(columns=['url']), 0, Counter()
@@ -135,7 +149,7 @@ with st.spinner("Loading data..."):
 # --- Display Metrics ---
 st.header("📊 Overall Summary")
 col1, col2, col3 = st.columns(3)
-col1.metric("Total PRs Processed/Identified", total_prs_processed)
+col1.metric("Total PRs Processed (from log)", total_prs_processed)
 col2.metric("Total SFT Records (from train.jsonl.gz)", len(sft_df) if not sft_df.empty else 0)
 col3.metric("Unique Repositories Involved (from PR log)", len(repo_counts) if repo_counts else 0)
 
@@ -271,7 +285,7 @@ st.sidebar.info(
 )
 st.sidebar.markdown("---")
 st.sidebar.header("Data File Paths (as configured in app)")
-st.sidebar.markdown(f"**Processed PRs Log (from image):** `{PROCESSED_PRS_FILE_PATH}`")
+st.sidebar.markdown(f"**Processed PRs Log (from mount):** `{PROCESSED_PRS_FILE_PATH}`")
 st.sidebar.markdown(f"**SFT Train Dataset (from mount):** `{SFT_DATASET_FILE_PATH}`")
 st.sidebar.markdown(f"**Dataset Card (from mount):** `{DATASET_CARD_PATH}`")
 
