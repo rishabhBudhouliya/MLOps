@@ -15,7 +15,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROCESSED_PRS_FILE_PATH = os.path.join(SCRIPT_DIR, "../new_prs_to_process.txt")
 SFT_DATASET_FILE_PATH = os.path.join(SCRIPT_DIR, "../dataset/v1/train.jsonl.gz")
 DATASET_CARD_PATH = os.path.join(SCRIPT_DIR, "../dataset/v1/dataset_card.md")
-BRONZE_DATA_PATH = os.path.join(SCRIPT_DIR, "../bronze/")
+# BRONZE_DATA_PATH = os.path.join(SCRIPT_DIR, "../bronze/") # REMOVED
 DEFAULT_SAMPLE_SIZE = 5 # Number of comments to sample from bronze data
 
 # --- Helper Functions ---
@@ -95,38 +95,28 @@ def load_markdown_file(file_path):
         return None
 
 @st.cache_data
-def discover_bronze_repositories(bronze_dir_path):
-    """Discovers repository data files in the bronze directory."""
-    if not os.path.isdir(bronze_dir_path):
-        st.warning(f"Bronze data directory not found: {bronze_dir_path}")
-        return []
-    
-    repo_files = glob.glob(os.path.join(bronze_dir_path, "*.jsonl.gz"))
-    repo_names = sorted([os.path.basename(f).replace(".jsonl.gz", "") for f in repo_files])
-    return repo_names
-
-@st.cache_data
-def load_repository_comments(bronze_dir_path, repository_name, sample_size=DEFAULT_SAMPLE_SIZE):
-    """Loads a sample of comments from a specific repository's gzipped JSONL file."""
-    file_path = os.path.join(bronze_dir_path, f"{repository_name}.jsonl.gz")
-    if not os.path.exists(file_path):
-        st.warning(f"Data file for repository {repository_name} not found: {file_path}")
+def load_sample_sft_data(sft_file_path, sample_size=DEFAULT_SAMPLE_SIZE):
+    """Loads a sample of records from the SFT training data file (train.jsonl.gz)."""
+    if not os.path.exists(sft_file_path):
+        st.warning(f"SFT training data file not found: {sft_file_path}")
         return []
 
-    comments_sample = []
+    records_sample = []
     try:
-        with gzip.open(file_path, 'rt', encoding='utf-8') as gz_file: # rt for text mode
-            for i, line in enumerate(gz_file):
+        open_func = gzip.open if sft_file_path.endswith('.gz') else open
+        mode = 'rt' if sft_file_path.endswith('.gz') else 'r'
+        with open_func(sft_file_path, mode, encoding='utf-8') as f_sft:
+            for i, line in enumerate(f_sft):
                 if i >= sample_size:
                     break
                 try:
-                    comments_sample.append(json.loads(line))
+                    records_sample.append(json.loads(line))
                 except json.JSONDecodeError as json_err:
-                    st.warning(f"Skipping malformed JSON line in {file_path}: {json_err}")
-                    continue # Skip malformed lines
-        return comments_sample
+                    st.warning(f"Skipping malformed JSON line in {sft_file_path}: {json_err}")
+                    continue 
+        return records_sample
     except Exception as e:
-        st.error(f"Error loading comments for {repository_name} from {file_path}: {e}")
+        st.error(f"Error loading sample SFT data from {sft_file_path}: {e}")
         return []
 
 # --- Main Dashboard ---
@@ -138,7 +128,7 @@ with st.spinner("Loading data..."):
     processed_prs_df, total_prs_processed, repo_counts = load_processed_prs(PROCESSED_PRS_FILE_PATH)
     sft_df = load_sft_dataset(SFT_DATASET_FILE_PATH)
     dataset_card_content = load_markdown_file(DATASET_CARD_PATH)
-    bronze_repos = discover_bronze_repositories(BRONZE_DATA_PATH)
+    # bronze_repos = discover_bronze_repositories(BRONZE_DATA_PATH) # REMOVED
 
 # --- Display Metrics ---
 st.header("📊 Overall Summary")
@@ -204,81 +194,85 @@ else:
 
 st.markdown("---")
 
-# --- Browse Raw Comments by Repository (Bronze Layer) ---
-st.header("🔍 Browse Raw Comments by Repository (Bronze Layer)")
-if bronze_repos:
-    # Add a unique key to selectbox
-    selected_repo = st.selectbox(
-        "Select a Repository to View Sample Comments:",
-        options=[""] + bronze_repos, # Add an empty option for default state
-        format_func=lambda x: "Select..." if x == "" else x,
-        key="bronze_repo_select"
-    )
-    
-    if selected_repo: # Only proceed if a repository is actually selected
-        st.subheader(f"Sample Comments for: {selected_repo}")
-        # Use a unique key for number_input to avoid issues when selected_repo changes
-        sample_size_input = st.number_input(
-            "Number of samples to display:",
-            min_value=1,
-            max_value=50, # Allow up to 50 samples
-            value=DEFAULT_SAMPLE_SIZE,
-            key=f"sample_size_{selected_repo}"
-        )
+# --- Sample Records from SFT Training Data ---
+st.header(f"🔍 Sample Records from SFT Training Data (`{os.path.basename(SFT_DATASET_FILE_PATH)}`)")
+
+sample_size_sft_input = st.number_input(
+    "Number of samples to display from SFT training data:",
+    min_value=1,
+    max_value=50, 
+    value=DEFAULT_SAMPLE_SIZE,
+    key="sample_size_sft_train"
+)
+
+sampled_sft_records = load_sample_sft_data(SFT_DATASET_FILE_PATH, sample_size=sample_size_sft_input)
+
+if sampled_sft_records:
+    for i, record_data in enumerate(sampled_sft_records):
+        if not isinstance(record_data, dict):
+            st.warning(f"Skipping malformed record entry {i+1} from SFT data (expected a dictionary).")
+            continue
         
-        comments = load_repository_comments(BRONZE_DATA_PATH, selected_repo, sample_size=sample_size_input)
-        if comments:
-            for i, comment_data in enumerate(comments):
-                # Ensure comment_data is a dict, provide default if not
-                if not isinstance(comment_data, dict):
-                    st.warning(f"Skipping malformed comment entry {i+1} for {selected_repo} (expected a dictionary).")
-                    continue
+        # Using keys confirmed from user's previous debug output for bronze data, assuming train data has similar structure
+        record_id_raw = record_data.get('comment_id') 
+        record_id_for_key = str(record_id_raw) if record_id_raw is not None else f"record_{i}"
 
-                # Try to get a unique ID, default if not available or not suitable for key
-                comment_id_raw = comment_data.get('comment_id')
-                comment_id_for_key = str(comment_id_raw) if comment_id_raw is not None else f"comment_{i}"
+        with st.expander(f"Sample Record {i+1} (ID: {record_data.get('comment_id', 'N/A')})", expanded=False):
+            user_login = record_data.get('comment_user_login', 'N/A') 
+            st.markdown(f"**User:** {user_login}")
+            st.markdown(f"**File Path (from comment):** `{record_data.get('comment_path', 'N/A')}`") 
+            st.markdown(f"**Created At (comment):** {record_data.get('comment_created_at', 'N/A')}") 
+            
+            # Display other fields relevant to SFT if they exist (e.g., 'instruction', 'response')
+            st.markdown("**Instruction:**")
+            st.text_area(
+                f"Instruction_{record_id_for_key}", 
+                str(record_data.get('instruction', '')), 
+                height=100,
+                key=f"instr_ta_{record_id_for_key}_{i}", 
+                disabled=True
+            )
+            st.markdown("**Response:**")
+            st.text_area(
+                f"Response_{record_id_for_key}", 
+                str(record_data.get('response', '')), 
+                height=150,
+                key=f"resp_ta_{record_id_for_key}_{i}", 
+                disabled=True
+            )
 
-                with st.expander(f"Comment {i+1} (ID: {comment_data.get('comment_id', 'N/A')})", expanded=False):
-                    user_login = comment_data.get('comment_user_login', 'N/A')
-                    
-                    st.markdown(f"**User:** {user_login}")
-                    st.markdown(f"**File Path:** `{comment_data.get('comment_path', 'N/A')}`")
-                    st.markdown(f"**Created At:** {comment_data.get('comment_created_at', 'N/A')}")
-                    
-                    st.markdown("**Comment Body:**")
-                    st.text_area(
-                        f"Body_{selected_repo}_{comment_id_for_key}",
-                        comment_data.get('comment_body', ''),
-                        height=100,
-                        key=f"body_ta_{selected_repo}_{comment_id_for_key}_{i}",
-                        disabled=True
-                    )
-
-                    st.markdown("**Diff Hunk:**")
-                    st.text_area(
-                        f"Diff Hunk_{selected_repo}_{comment_id_for_key}",
-                        comment_data.get('diff', 'No diff hunk available'),
-                        height=200,
-                        key=f"dh_ta_{selected_repo}_{comment_id_for_key}_{i}",
-                        disabled=True
-                    )
-        elif selected_repo: # if selected_repo is not an empty string but comments list is empty
-             st.info(f"No comments found or able to be loaded for {selected_repo}. Make sure the .jsonl.gz file is correctly formatted, not empty, and accessible.")
+            # Keep original comment body and diff if they are still relevant and present in train.jsonl.gz
+            st.markdown("**Original Comment Body (if available):**")
+            st.text_area(
+                f"OrigBody_{record_id_for_key}", 
+                record_data.get('comment_body', ''), 
+                height=100,
+                key=f"origbody_ta_{record_id_for_key}_{i}", 
+                disabled=True
+            )
+            st.markdown("**Original Diff Hunk (if available):**")
+            st.text_area(
+                f"OrigDiff_{record_id_for_key}", 
+                record_data.get('diff', 'No diff hunk available'), 
+                height=200,
+                key=f"origdiff_ta_{record_id_for_key}_{i}", 
+                disabled=True
+            )
 else:
-    st.info("No repository data files found in the bronze layer directory. Check `BRONZE_DATA_PATH` and ensure files like `owner_repo.jsonl.gz` exist.")
+    st.info(f"No sample records to display from {os.path.basename(SFT_DATASET_FILE_PATH)}. File might be empty or not found at {SFT_DATASET_FILE_PATH}.")
 
 # --- Sidebar ---
 st.sidebar.header("About")
 st.sidebar.info(
     "This dashboard provides insights into the GitHub PR processing pipeline, "
-    "the generated SFT dataset, and allows browsing raw comment data from the bronze layer."
+    "the generated SFT dataset (from train.jsonl.gz), and allows browsing sample records from the SFT training data."
 )
 st.sidebar.markdown("---")
 st.sidebar.header("Data File Paths")
 st.sidebar.markdown(f"**Processed PRs Log:** `{PROCESSED_PRS_FILE_PATH}`")
 st.sidebar.markdown(f"**SFT Train Dataset:** `{SFT_DATASET_FILE_PATH}`")
 st.sidebar.markdown(f"**Dataset Card:** `{DATASET_CARD_PATH}`")
-st.sidebar.markdown(f"**Bronze Layer Data:** `{BRONZE_DATA_PATH}`")
+# st.sidebar.markdown(f"**Bronze Layer Data:** `{BRONZE_DATA_PATH}`") # REMOVED
 
 if st.sidebar.button("Reload All Data & Clear Cache"):
     st.cache_data.clear()

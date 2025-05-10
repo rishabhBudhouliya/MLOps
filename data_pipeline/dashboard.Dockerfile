@@ -21,7 +21,7 @@ COPY ./dashboard /app/dashboard
 # so these target paths inside the container need to align with those relative lookups (e.g., ../dataset/v1).
 COPY ./new_prs_to_process.txt /app/new_prs_to_process.txt
 COPY ./dataset/v1 /app/dataset/v1
-COPY ./bronze /app/bronze
+# COPY ./bronze /app/bronze # REMOVED - Bronze data is no longer directly used by the dashboard UI in this way
 
 # Expose Streamlit's default port
 EXPOSE 8501
