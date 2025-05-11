@@ -15,7 +15,7 @@ services:
       # IMPORTANT: This makes your rclone credentials accessible to the container.
       # Use with caution, especially in shared environments.
       - ~/.config/rclone:/root/.config/rclone:ro
-      # Mount directories for intermediate files and potential local output
+      # Mount directories for intermediate files and potential local output for the batch pipeline
       - ./pipeline_intermediate:/app/pipeline_intermediate
       - ./pipeline_output_raw:/app/pipeline_output_raw
     # Define named commands for different ways to run the scripts
@@ -23,6 +23,29 @@ services:
     #       as the Python scripts handle the orchestration internally.
     #       'run-full-pipeline' is the main command.
     command: ["sleep", "infinity"] # Default command keeps container alive if needed, override with 'run'
+
+  online-evaluator: # New service for the online evaluation pipeline
+    build:
+      context: . # Current directory
+      dockerfile: Dockerfile.online_evaluation # Specify the Dockerfile for online mode
+    container_name: online-evaluation-service
+    environment:
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+    volumes:
+      # Mount the config file (read-only)
+      - ./config.yaml:/app/config.yaml:ro
+      # Mount the rclone configuration (read-only)
+      - ~/.config/rclone:/root/.config/rclone:ro
+      # Note: The online script uploads directly to S3, so a dedicated handoff volume mount
+      # for its output is not strictly needed here in the compose service definition itself,
+      # as S3 is the destination. Intermediate files are handled inside the container by default.
+      # If debugging and needing to inspect intermediate files from online eval, you could add:
+      # - ./pipeline_intermediate_online_host:/app/pipeline_intermediate_online_docker 
+      #   (matching the default CMD --intermediate-dir in Dockerfile.online_evaluation)
+    # The default command is set in Dockerfile.online_evaluation (ENTRYPOINT + CMD).
+    # To run, you will override the CMD part implicitly or explicitly when using `docker compose run`
+    # by adding arguments like --pr-identifier.
+    command: ["sleep", "infinity"] # Keeps container alive if started with 'up', override with 'run'
 
 # Example named commands to run specific actions using 'docker compose run':
 #
