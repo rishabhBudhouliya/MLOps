@@ -15,7 +15,7 @@ USER ${NB_UID}
 
 # === Core Libraries ===
 RUN pip install --pre --no-cache-dir \
-    'transformers==4.37.2' \           # compatible with optimum
+    'transformers==4.37.2' \           
     'peft' \
     'bert_score' \
     'datasets' \
@@ -27,7 +27,7 @@ RUN pip install --pre --no-cache-dir \
     'tensorrt-cu12' \
     'tensorrt-cu12-bindings' \
     'tensorrt-cu12-libs' \
-    'optimum[onnxruntime]' && \        # <-- Optional: add if you want .generate() support
+    'optimum[onnxruntime]' && \
     fix-permissions "${CONDA_DIR}" && \
     fix-permissions "/home/${NB_USER}"
 
