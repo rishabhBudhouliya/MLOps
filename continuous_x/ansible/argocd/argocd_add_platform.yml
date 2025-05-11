@@ -46,7 +46,7 @@
       when: ns_check.rc != 0
       command: kubectl create namespace code-reviewer-platform-project32
     
-    # Check first, then create GitHub token secret
+    # Option 1: Check first, then create (more reliable approach)
     - name: Check if GitHub access token secret exists
       command: kubectl get secret github-access-token --namespace code-reviewer-platform-project32
       register: secret_check
@@ -59,21 +59,16 @@
         kubectl create secret generic github-access-token
         --namespace code-reviewer-platform-project32
         --from-literal=token=your-github-token-here
-        
-    # Check for MinIO credentials secret
-    - name: Check if MinIO credentials secret exists
-      command: kubectl get secret minio-credentials --namespace code-reviewer-platform-project32
-      register: minio_secret_check
-      failed_when: false
-      changed_when: false
     
-    - name: Create MinIO credentials secret if missing
-      when: minio_secret_check.rc != 0
-      command: >
-        kubectl create secret generic minio-credentials
-        --namespace code-reviewer-platform-project32
-        --from-literal=accesskey=minioadmin
-        --from-literal=secretkey=minioadmin
+    # Option 2: Alternative approach (only use one of the options)
+    # - name: Create GitHub access token secret
+    #   command: >
+    #     kubectl create secret generic github-access-token
+    #     --namespace code-reviewer-platform-project32
+    #     --from-literal=token=your-github-token-here
+    #   register: github_token_secret
+    #   failed_when: github_token_secret.rc != 0 and "already exists" not in github_token_secret.stderr
+    #   changed_when: github_token_secret.rc == 0
     
     - name: Check if ArgoCD application exists
       command: >
@@ -90,8 +85,7 @@
         --path {{ app_path }} \
         --dest-server https://kubernetes.default.svc \
         --dest-namespace code-reviewer-platform-project32 \
-        --helm-set-string minio.externalIP={{ external_ip }} \
-        --helm-set-string mlflow.externalIP={{ external_ip }} \
+        --helm-set-string service.externalIP={{ external_ip }} \
         --port-forward --port-forward-namespace={{ argocd_namespace }} \
         --sync-policy automated --self-heal
       register: app_create
@@ -101,8 +95,7 @@
       command: >
         argocd app set {{ app_name }} \
         --dest-namespace code-reviewer-platform-project32 \
-        --helm-set-string minio.externalIP={{ external_ip }} \
-        --helm-set-string mlflow.externalIP={{ external_ip }} \
+        --helm-set-string service.externalIP={{ external_ip }} \
         --port-forward --port-forward-namespace={{ argocd_namespace }}
       register: app_update
     
