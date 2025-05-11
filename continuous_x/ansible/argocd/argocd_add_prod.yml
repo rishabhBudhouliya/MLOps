@@ -3,7 +3,7 @@
   hosts: node1
   become: yes
   vars:
-    app_name: project32-production
+    app_name: code-reviewer-production-project32
     repo_url: https://github.com/BugBeak/MLOps.git
     app_path: continuous_x/k8s/production
     argocd_namespace: argocd
@@ -29,8 +29,8 @@
       set_fact:
         external_ip: "{{ ansible_all_ipv4_addresses | select('match', '^10\\.56\\..*') | list | first }}"
     
-    - name: Create project32-production if missing
-      command: kubectl create namespace project32-production
+    - name: Create code-reviewer-production-project32 if missing
+      command: kubectl create namespace code-reviewer-production-project32
       register: ns_create
       failed_when: ns_create.rc != 0 and "AlreadyExists" not in ns_create.stderr
       changed_when: "'created' in ns_create.stdout"

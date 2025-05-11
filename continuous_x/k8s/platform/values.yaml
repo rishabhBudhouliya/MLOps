@@ -1,5 +1,5 @@
 minio:
-  externalIP: "0.0.0.0"
+  externalIP: ""
 
 mlflow:
-  externalIP: "0.0.0.0"
+  externalIP: ""
