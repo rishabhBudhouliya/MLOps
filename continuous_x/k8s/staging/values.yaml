@@ -5,7 +5,7 @@ image:
   tag: staging-1.0.0
 
 service:
-  port: 8080
+  port: 8081
   externalIP: ""   # Will be set at deployment time
 
 github:

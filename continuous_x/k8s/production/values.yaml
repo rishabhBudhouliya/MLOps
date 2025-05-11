@@ -5,7 +5,7 @@ image:
   tag: production-1.0.0
 
 service:
-  port: 8080
+  port: 80
   externalIP: ""   # Will be set at deployment time
 
 github:
