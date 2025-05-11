@@ -6,6 +6,7 @@ import argparse
 from pathlib import Path
 import shutil
 import tempfile
+import time # Added for rclone retry delay
 
 # --- Helper Functions (duplicated from run_pipeline.py for now) ---
 
@@ -18,10 +19,13 @@ def load_config(config_path):
             raise ValueError("Config file is empty.")
         # Validation for online evaluation mode
         if 'online_evaluation' not in config or \
-           'handoff_storage_path' not in config['online_evaluation']:
-            raise ValueError("Missing 'online_evaluation.handoff_storage_path' in config.")
-        if 'data_paths' not in config or 'rclone_remote_name' not in config: # Still needed if sub-scripts use them
-             print("Warning: 'data_paths' or 'rclone_remote_name' might be expected by sub-scripts like fetcher/transformer if they use generic config loading.", file=sys.stderr)
+           's3_target_path' not in config['online_evaluation']:
+            raise ValueError("Missing 'online_evaluation.s3_target_path' in config.")
+        if 'rclone_remote_name' not in config or not config['rclone_remote_name']:
+            raise ValueError("Missing or empty 'rclone_remote_name' in config for S3 uploads.")
+        # data_paths might still be referenced by sub-scripts if they load config generically
+        if 'data_paths' not in config:
+             print("Warning: 'data_paths' might be expected by sub-scripts like fetcher if it uses generic config loading.", file=sys.stderr)
         return config
     except FileNotFoundError:
         print(f"Error: Config file not found at {config_path}", file=sys.stderr)
@@ -32,6 +36,44 @@ def load_config(config_path):
     except ValueError as e:
         print(f"Error in config file structure: {e}", file=sys.stderr)
         sys.exit(1)
+
+def run_rclone_command(args_list, suppress_output=False, max_retries=3, retry_delay=5):
+    """Runs an rclone command with retry logic. Args_list is the list of arguments for rclone."""
+    command = ['rclone'] + args_list
+    print(f"Running rclone command: {' '.join(command)}")
+
+    for attempt in range(max_retries):
+        try:
+            # Using subprocess.run for potentially simpler capture and error checking
+            process = subprocess.run(command, capture_output=True, text=True, check=False) 
+            if process.returncode != 0:
+                 if attempt < max_retries - 1:
+                     print(f"Rclone attempt {attempt + 1}/{max_retries} failed. Retrying in {retry_delay} seconds...", file=sys.stderr)
+                     print(f"Rclone stderr: {process.stderr}", file=sys.stderr)
+                     time.sleep(retry_delay)
+                     continue
+                 print(f"Error running rclone command: {' '.join(command)}", file=sys.stderr)
+                 print(f"Return Code: {process.returncode}", file=sys.stderr)
+                 print(f"Rclone stdout: {process.stdout}", file=sys.stderr) # stdout might also have info
+                 print(f"Rclone stderr: {process.stderr}", file=sys.stderr)
+                 return False, process.stderr
+            else:
+                if not suppress_output and process.stdout:
+                    print(f"Rclone stdout: {process.stdout}")
+                if process.stderr and not suppress_output: # Rclone often uses stderr for progress
+                    print(f"Rclone stderr: {process.stderr}")
+                return True, process.stderr # Return stderr even on success for potential info
+        except FileNotFoundError:
+             print("Error: 'rclone' command not found. Ensure it is installed and in PATH.", file=sys.stderr)
+             return False, "rclone not found"
+        except Exception as e:
+            if attempt < max_retries - 1:
+                print(f"Rclone attempt {attempt + 1}/{max_retries} failed with exception: {e}. Retrying in {retry_delay} seconds...", file=sys.stderr)
+                time.sleep(retry_delay)
+                continue
+            print(f"An unexpected error occurred while running rclone: {e}", file=sys.stderr)
+            return False, str(e)
+    return False, "Max retries exceeded for rclone command"
 
 def run_script(script_name, args_list, working_dir=None):
     """Runs a python script using subprocess and checks the return code."""
@@ -80,12 +122,11 @@ if __name__ == "__main__":
         transformed_data_dir = run_specific_intermediate_dir / "transformed_data"
         transformed_data_dir.mkdir(parents=True, exist_ok=True)
 
-        handoff_path_str = config['online_evaluation']['handoff_storage_path']
-        handoff_dir = Path(handoff_path_str)
-        if not handoff_dir.exists() or not handoff_dir.is_dir():
-            print(f"Error: Handoff storage path '{handoff_path_str}' does not exist or is not a directory.", file=sys.stderr)
-            print("Please ensure it's a mounted block storage path or a valid directory accessible by the inference system.")
-            sys.exit(1)
+        # Handoff path config now points to S3, not a local dir for staging
+        s3_target_base_path_str = config['online_evaluation']['s3_target_path']
+        rclone_remote_name = config['rclone_remote_name']
+        if not s3_target_base_path_str.endswith('/'):
+            s3_target_base_path_str += '/'
 
 
         # --- Step 1: Fetch Raw Data for the Single PR ---
@@ -138,30 +179,28 @@ if __name__ == "__main__":
             print(f"Failed to extract hunks for PR {args.pr_identifier}. Exiting.")
             sys.exit(1)
 
-        # --- Step 3: Stage Transformed Data for Inference ---
-        print("\n" + "="*10 + " STEP 3: Stage Transformed Data for PR " + args.pr_identifier + "="*10)
+        # --- Step 3: Upload Transformed Data to S3 ---
+        print("\n" + "="*10 + " STEP 3: Upload Transformed Data to S3 for PR " + args.pr_identifier + "="*10)
         
-        staged_files_count = 0
-        # Now we expect a specific file: {pr_identifier_slug}_hunks.jsonl
-        if output_hunks_jsonl.exists() and output_hunks_jsonl.is_file():
-            target_handoff_file_name = f"pr_{pr_identifier_slug}_hunks_for_inference.jsonl" # Make distinct for handoff
-            target_handoff_file_path = handoff_dir / target_handoff_file_name
-            try:
-                shutil.copy(output_hunks_jsonl, target_handoff_file_path)
-                print(f"Successfully staged '{output_hunks_jsonl.name}' to '{target_handoff_file_path}'")
-                staged_files_count += 1
-            except Exception as e:
-                print(f"Error staging file '{output_hunks_jsonl.name}' to '{target_handoff_file_path}': {e}", file=sys.stderr)
-                sys.exit(1)
-        else:
-            print(f"Error: Expected output file {output_hunks_jsonl} not found after hunk extraction.", file=sys.stderr)
-            sys.exit(1) # Failure if the expected output isn't there
-
-        if staged_files_count == 0:
-            print(f"Error: No transformed files were staged for PR {args.pr_identifier}. This indicates an issue.", file=sys.stderr)
+        if not output_hunks_jsonl.exists() or not output_hunks_jsonl.is_file():
+            print(f"Error: Expected output file {output_hunks_jsonl} not found after hunk extraction. Cannot upload.", file=sys.stderr)
             sys.exit(1)
 
-        print(f"Successfully staged {staged_files_count} transformed hunk file(s) to {handoff_dir}.")
+        # Construct the full remote S3 path for the specific file
+        # Example: remote:bucket/online_eval_hunks/pr_owner_repo_123_hunks.jsonl
+        remote_s3_file_path = f"{rclone_remote_name}:{s3_target_base_path_str}{output_hunks_jsonl.name}"
+        
+        print(f"Attempting to upload '{output_hunks_jsonl}' to '{remote_s3_file_path}'...")
+        upload_success, rclone_output = run_rclone_command(
+            ['copyto', str(output_hunks_jsonl), remote_s3_file_path],
+            suppress_output=not args.debug # Show rclone output if in debug mode
+        )
+
+        if upload_success:
+            print(f"Successfully uploaded transformed hunks to {remote_s3_file_path}")
+        else:
+            print(f"Failed to upload transformed hunks to S3 for PR {args.pr_identifier}. Rclone output: {rclone_output}", file=sys.stderr)
+            sys.exit(1)
 
     finally:
         # --- Cleanup ---
