@@ -68,7 +68,7 @@ spec:
       parameters:
       - name: dataset-path
     container:
-      image: project32/code-review-training:latest
+      image: registry.kube-system.svc.cluster.local:5000/code-review-training:v0.1.0
       command: [python, train.py]
       args: ["--data-path", "{{inputs.parameters.dataset-path}}"]
       volumeMounts:

@@ -1,0 +1,13 @@
+FROM python:3.11-slim
+
+# Create app directory
+WORKDIR /app
+
+# Install minimal dependencies (simulate training)
+RUN pip install --no-cache-dir mlflow
+
+# Dummy training script
+COPY train.py .
+
+# Entry point
+CMD ["python", "train.py"]
