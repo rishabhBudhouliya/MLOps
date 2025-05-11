@@ -1,5 +1,5 @@
 ---
-- name: Deploy Code Reviewer Platform via ArgoCD & Helm with MinIO and Prometheus
+- name: Deploy MLflow platform via ArgoCD & Helm with MinIO secret handling
   hosts: node1
   become: yes
   vars:
@@ -7,22 +7,7 @@
     repo_path: "https://github.com/BugBeak/MLOps.git"
     app_name: "code-reviewer-platform-project32"
     app_path: "continuous_x/k8s/platform"
-    
-    # Added MinIO configuration
-    minio_app: "code-reviewer-minio"
-    minio_path: "continuous_x/k8s/platform/minio"
-    minio_access_key: "minioadmin"
-    
-    # Added Prometheus monitoring
-    prom_app: "code-reviewer-prometheus"
-    prom_path: "continuous_x/k8s/monitoring/prometheus"
-    
-    # External ports for services
-    external_port_prom: "9090"
-    external_port_minio: "9000"
-    
-    prom_nodeport: "{{ external_port_prom }}"
-    minio_nodeport: "{{ external_port_minio }}"
+    minio_access_key: "your-access-key"
 
   tasks:
     - name: Get ArgoCD admin password from Kubernetes secret
@@ -51,39 +36,17 @@
     - name: Detect external IP starting with 10.56
       set_fact:
         external_ip: "{{ ansible_all_ipv4_addresses | select('match', '^10\\.56\\..*') | list | first }}"
-        
-    - debug:                                   
-        msg: |
-          external_ip = {{ external_ip }}
-          prom_nodeport = {{ prom_nodeport }}
-          minio_nodeport = {{ minio_nodeport }}
 
-    - name: Ensure code-reviewer-platform namespace exists
+    - name: Ensure code-reviewer-platform-project32 namespace exists
       command: kubectl get namespace code-reviewer-platform-project32
       register: ns_check
       failed_when: false
       changed_when: false
 
-    - name: Create code-reviewer-platform namespace if missing
+    - name: Create code-reviewer-platform-project32 namespace if missing
       when: ns_check.rc != 0
       command: kubectl create namespace code-reviewer-platform-project32
 
-    # GitHub token management - currently commented out in original
-    # - name: Check if GitHub access token secret exists
-    #   command: kubectl get secret github-access-token -n code-reviewer-platform-project32
-    #   register: github_secret_check
-    #   failed_when: false
-    #   changed_when: false
-
-    # - name: Create GitHub access token secret if missing
-    #   when: github_secret_check.rc != 0
-    #   command: >
-    #     kubectl create secret generic github-access-token
-    #     --namespace code-reviewer-platform-project32
-    #     --from-literal=token={{ github_token }}
-    #   register: github_secret_create
-
-    # Add MinIO secret handling
     - name: Check if MinIO secret already exists
       command: kubectl get secret minio-credentials -n code-reviewer-platform-project32
       register: minio_secret_check
@@ -129,8 +92,9 @@
         --repo {{ repo_path }} \
         --path {{ app_path }} \
         --dest-server https://kubernetes.default.svc \
-        --dest-namespace code-reviewer-platform-project32 \
-        --helm-set-string service.externalIP={{ external_ip }} \
+        --dest-namespace "" \
+        --helm-set-string minio.externalIP={{ external_ip }} \
+        --helm-set-string mlflow.externalIP={{ external_ip }} \
         --port-forward --port-forward-namespace=argocd \
         --sync-policy automated --self-heal
       register: app_create
@@ -139,98 +103,14 @@
       when: app_check.rc == 0
       command: >
         argocd app set {{ app_name }} \
-        --dest-namespace code-reviewer-platform-project32 \
-        --helm-set-string service.externalIP={{ external_ip }} \
+        --dest-namespace "" \
+        --helm-set-string minio.externalIP={{ external_ip }} \
+        --helm-set-string mlflow.externalIP={{ external_ip }} \
         --port-forward --port-forward-namespace=argocd
       register: app_update
-
-    # Add MinIO application
-    - name: Check MinIO app
-      command: argocd app get {{ minio_app }} --port-forward --port-forward-namespace=argocd
-      register: minio_check
-      failed_when: false
-      changed_when: false
-
-    - name: Create MinIO app (if missing)
-      when: minio_check.rc != 0
-      command: >
-        argocd app create {{ minio_app }} \
-          --repo {{ repo_path }} \
-          --path {{ minio_path }} \
-          --dest-server https://kubernetes.default.svc \
-          --dest-namespace code-reviewer-platform-project32 \
-          --helm-set-string service.type=NodePort \
-          --helm-set-string service.nodePort={{ minio_nodeport }} \
-          --helm-set-string externalIP={{ external_ip }} \
-          --helm-set-string accessKey={{ minio_access_key }} \
-          --helm-set-string secretKey={{ minio_secret_key }} \
-          --port-forward --port-forward-namespace=argocd \
-          --sync-policy automated --self-heal
-
-    - name: Update MinIO app (if present)
-      when: minio_check.rc == 0
-      command: >
-        argocd app set {{ minio_app }} \
-          --helm-set-string service.nodePort={{ minio_nodeport }} \
-          --helm-set-string externalIP={{ external_ip }} \
-          --helm-set-string accessKey={{ minio_access_key }} \
-          --helm-set-string secretKey={{ minio_secret_key }} \
-          --port-forward --port-forward-namespace=argocd
-          
-    # Added monitoring namespace and Prometheus app
-    - name: Ensure code-reviewer-monitoring namespace exists
-      command: kubectl get namespace code-reviewer-monitoring
-      register: mon_ns_check
-      failed_when: false
-      changed_when: false
-
-    - name: Create monitoring namespace if missing
-      when: mon_ns_check.rc != 0
-      command: kubectl create namespace code-reviewer-monitoring
-
-    - name: Check Prometheus app
-      command: argocd app get {{ prom_app }} --port-forward --port-forward-namespace=argocd
-      register: prom_check
-      failed_when: false
-      changed_when: false
-
-    - name: Create Prometheus app (if missing)
-      when: prom_check.rc != 0
-      command: >
-        argocd app create {{ prom_app }} \
-          --repo {{ repo_path }} \
-          --path {{ prom_path }} \
-          --dest-server https://kubernetes.default.svc \
-          --dest-namespace code-reviewer-monitoring \
-          --helm-set-string server.service.type=NodePort \
-          --helm-set-string server.service.nodePort={{ prom_nodeport }} \
-          --port-forward --port-forward-namespace=argocd \
-          --sync-policy automated --self-heal
-
-    - name: Update Prometheus app (if present)
-      when: prom_check.rc == 0
-      command: >
-        argocd app set {{ prom_app }} \
-          --helm-set-string server.service.nodePort={{ prom_nodeport }} \
-          --port-forward --port-forward-namespace=argocd
 
     - name: Display MinIO credentials
       debug:
         msg: |
           MinIO Access Key: {{ minio_access_key }}
           MinIO Secret Key: {{ minio_secret_key }}
-          
-    - name: Display ArgoCD app status
-      command: argocd app get {{ app_name }} --port-forward --port-forward-namespace=argocd
-      register: final_status
-      
-    - name: Show final status
-      debug:
-        var: final_status.stdout
-        
-    # Added display service URLs
-    - name: Show service access information
-      debug:
-        msg: |
-          Prometheus will be available at: http://{{ external_ip }}:{{ prom_nodeport }}
-          MinIO will be available at: http://{{ external_ip }}:{{ minio_nodeport }}
