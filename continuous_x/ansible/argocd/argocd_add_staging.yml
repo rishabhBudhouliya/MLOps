@@ -34,6 +34,21 @@
       register: ns_create
       failed_when: ns_create.rc != 0 and "AlreadyExists" not in ns_create.stderr
       changed_when: "'created' in ns_create.stdout"
+      
+    - name: Create github-credentials secret if it doesn't exist
+      shell: |
+        if ! kubectl get secret github-credentials -n project32-staging &>/dev/null; then
+          # Check if github-access-token exists and copy from it
+          if kubectl get secret github-access-token -n project32-staging &>/dev/null; then
+            TOKEN=$(kubectl get secret github-access-token -n project32-staging -o jsonpath='{.data.token}' | base64 --decode)
+            kubectl create secret generic github-credentials --namespace project32-staging --from-literal=token="${TOKEN}"
+          else
+            # Create with placeholder token - should be replaced with real token
+            kubectl create secret generic github-credentials --namespace project32-staging --from-literal=token="your-github-token-here"
+          fi
+        fi
+      args:
+        executable: /bin/bash
     
     - name: Check if ArgoCD app exists
       command: argocd app get {{ app_name }} --port-forward --port-forward-namespace={{ argocd_namespace }}
@@ -48,8 +63,9 @@
         --repo {{ repo_url }} \
         --path {{ app_path }} \
         --dest-server https://kubernetes.default.svc \
-        --dest-namespace code-reviewer-staging-project32 \
+        --dest-namespace project32-staging \
         --helm-set-string service.externalIP={{ external_ip }} \
+        --helm-set service.port=8081 \
         --sync-policy automated --self-heal \
         --port-forward --port-forward-namespace={{ argocd_namespace }}
     
@@ -57,7 +73,14 @@
       when: app_check.rc == 0
       command: >
         argocd app set {{ app_name }} \
+        --dest-namespace project32-staging \
         --helm-set-string service.externalIP={{ external_ip }} \
+        --helm-set service.port=8081 \
+        --port-forward --port-forward-namespace={{ argocd_namespace }}
+    
+    - name: Sync the application
+      command: >
+        argocd app sync {{ app_name }} \
         --port-forward --port-forward-namespace={{ argocd_namespace }}
     
     - name: Display ArgoCD app status

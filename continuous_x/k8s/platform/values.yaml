@@ -1,5 +1,7 @@
 minio:
-  externalIP: "0.0.0.0"
+  # Will be set dynamically during deployment
+  externalIP: ""
 
 mlflow:
-  externalIP: "0.0.0.0"
+  # Will be set dynamically during deployment
+  externalIP: ""
