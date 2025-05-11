@@ -5,7 +5,7 @@
   vars:
     repo_url: https://github.com/BugBeak/MLOps.git
     repo_dest: /tmp/mlops-project32
-    workflow_file: workflows/build-initial.yaml
+    workflow_file: continuous_x/workflows/build-initial.yaml
     workflow_name: build-initial-project32
     argo_namespace: argo
   tasks:
