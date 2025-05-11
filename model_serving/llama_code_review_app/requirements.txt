@@ -1,0 +1,7 @@
+fastapi
+uvicorn
+onnxruntime-gpu
+transformers
+numpy
+python-multipart
+
