@@ -1,0 +1,4 @@
+apiVersion: v2
+name: project32-production
+version: 1.0.0
+description: Project32 Code Reviewer Bot - Production Deployment
