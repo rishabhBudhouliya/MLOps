@@ -1,11 +1,11 @@
 replicaCount: 1
 
 image:
-  repository: registry.kube-system.svc.cluster.local:5000/code-review-serving
+  repository: registry.kube-system.svc.cluster.local:5000/reviewer-bot
   tag: staging-1.0.0
 
 service:
-  port: 8080
+  port: 8081
   externalIP: ""   # Will be set at deployment time
 
 github:
