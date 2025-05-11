@@ -29,8 +29,8 @@
       set_fact:
         external_ip: "{{ ansible_all_ipv4_addresses | select('match', '^10\\.56\\..*') | list | first }}"
     
-    - name: Create code-reviewer-staging namespace if missing
-      command: kubectl create namespace code-reviewer-staging-project32
+    - name: Create project32-staging namespace if missing
+      command: kubectl create namespace project32-staging
       register: ns_create
       failed_when: ns_create.rc != 0 and "AlreadyExists" not in ns_create.stderr
       changed_when: "'created' in ns_create.stdout"
