@@ -5,7 +5,7 @@
   vars:
     app_name: code-reviewer-staging-project32
     repo_url: https://github.com/BugBeak/MLOps.git
-    app_path: k8s/staging
+    app_path: continuous_x/k8s/staging
     argocd_namespace: argocd
   tasks:
     - name: Get ArgoCD admin password
