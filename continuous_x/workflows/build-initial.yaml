@@ -47,16 +47,17 @@ spec:
         mountPath: /mnt/workspace
 
   - name: kaniko
-    container:
-      image: gcr.io/kaniko-project/executor:latest
-      args:
-        - --dockerfile=/mnt/workspace/Dockerfile
-        - --context=/mnt/workspace
-        - --destination=registry.kube-system.svc.cluster.local:5000/code-review-serving:staging-1.0.0
-        - --destination=registry.kube-system.svc.cluster.local:5000/code-review-serving:canary-1.0.0
-        - --destination=registry.kube-system.svc.cluster.local:5000/code-review-serving:production-1.0.0
-        - --insecure
-      volumeMounts:
-        - name: workdir
-          mountPath: /mnt/workspace
+  container:
+    image: gcr.io/kaniko-project/executor:latest
+    args:
+      - --dockerfile=/mnt/workspace/continuous_x/model_serving/Dockerfile.serving
+      - --context=/mnt/workspace/continuous_x/model_serving
+      - --destination=registry.kube-system.svc.cluster.local:5000/reviewer-bot:staging-1.0.0
+      - --destination=registry.kube-system.svc.cluster.local:5000/reviewer-bot:canary-1.0.0
+      - --destination=registry.kube-system.svc.cluster.local:5000/reviewer-bot:production-1.0.0
+      - --insecure
+    volumeMounts:
+      - name: workdir
+        mountPath: /mnt/workspace
+
 
