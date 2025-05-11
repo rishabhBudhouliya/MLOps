@@ -5,7 +5,7 @@
   vars:
     argocd_username: "admin"
     repo_path: "https://github.com/BugBeak/MLOps.git"
-    app_name: "code-reviewer-platform-project32"
+    app_name: "project32-platform"
     app_path: "continuous_x/k8s/platform"
     argocd_namespace: argocd
   tasks:

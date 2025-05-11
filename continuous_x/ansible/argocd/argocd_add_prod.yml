@@ -3,7 +3,7 @@
   hosts: node1
   become: yes
   vars:
-    app_name: code-reviewer-production-project32
+    app_name: project32-production
     repo_url: https://github.com/BugBeak/MLOps.git
     app_path: continuous_x/k8s/production
     argocd_namespace: argocd
