@@ -30,3 +30,6 @@ rclone_remote_name: "chi_tacc" # Name of your rclone remote configured with rclo
 filters:
   min_comments: 3 # Minimum number of review comments a PR must have
   state: "merged" # Fetch PRs with this state ("open", "closed", "merged", "all")
+
+online_evaluation:
+  handoff_storage_path: "/path/to/your/block_storage_or_shared_dir_for_inference_queue/"

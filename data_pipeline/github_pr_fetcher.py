@@ -296,7 +296,8 @@ def upload_repository_batch_to_s3(config: dict, local_repo_data_path: Path, owne
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Fetch GitHub PR diff and comments, save raw data, and upload to S3.")
     parser.add_argument("--config", required=True, help="Path to the YAML configuration file.")
-    parser.add_argument("--input-pr-list", required=True, help="Path to a text file containing PR URLs to process, one URL per line.")
+    parser.add_argument("--input-pr-list", required=False, help="Path to a text file containing PR URLs to process, one URL per line. Ignored if --pr-identifier is set.")
+    parser.add_argument("--pr-identifier", default=None, help="Process a single PR specified as \'owner/repo/pr_number\' or a full GitHub PR URL. If set, --input-pr-list is ignored.")
     parser.add_argument("--debug", action="store_true", help="Enable debug mode with more verbose output")
     parser.add_argument("--local-output-dir", required=True, help="Directory to save the raw diff and comment files locally.")
     parser.add_argument("--skip-remote-upload", action="store_true", help="Skip uploading files to S3 remote.")
@@ -315,158 +316,101 @@ if __name__ == "__main__":
     processed_prs_by_repo_checkpoint = load_checkpoint(checkpoint_file_path)
     # This will be updated during processing and saved after each repo batch or S3 skip.
 
-    # --- Read PR List ---
-    all_input_pr_urls = []
-    try:
-        with open(args.input_pr_list, 'r') as f:
-            for line in f:
-                url = line.strip()
-                if url:
-                    all_input_pr_urls.append(url)
-        print(f"Read {len(all_input_pr_urls)} PR URLs from {args.input_pr_list}")
-    except FileNotFoundError:
-        print(f"Error: Input PR list file not found at {args.input_pr_list}", file=sys.stderr)
-        sys.exit(1)
-    except Exception as e:
-        print(f"Error reading input PR list {args.input_pr_list}: {e}", file=sys.stderr)
-        sys.exit(1)
-
-    if not all_input_pr_urls:
-        print("No PR URLs found in the input file. Exiting.")
-        sys.exit(0)
-        
-    # --- Group PRs by Repository ---
-    prs_grouped_by_repository = group_prs_by_repository(all_input_pr_urls)
-    if not prs_grouped_by_repository:
-        print("No valid PR URLs to process after grouping. Exiting.")
-        sys.exit(0)
-
     # --- GitHub API Setup --- 
     try:
         token = get_github_token()
         auth = Auth.Token(token)
         g = Github(auth=auth, retry=5, timeout=60) # Increased timeout for Github client
         print("GitHub client initialized.")
-        print(f"Authenticated as user: {g.get_user().login}")
+        # Avoid printing user login immediately if in single PR mode where it might fail early
     except Exception as e:
         print(f"Error initializing GitHub client: {e}", file=sys.stderr)
         sys.exit(1)
 
-    # --- Processing Loop ---
-    overall_success_count = 0
-    overall_failure_count = 0
-    
-    # Store all successfully processed PRs (owner, repo, number) across all batches in this run
-    # to later compare with all_input_pr_urls for checkpoint deletion.
-    all_prs_fully_processed_in_this_run_or_before = set()
-    # Populate from existing checkpoint
-    for repo_key_chk, pr_nums_chk in processed_prs_by_repo_checkpoint.items():
-        owner_chk, repo_name_chk = repo_key_chk.split('/', 1)
-        for pr_num_chk in pr_nums_chk:
-            all_prs_fully_processed_in_this_run_or_before.add((owner_chk, repo_name_chk, pr_num_chk))
-
-
-    for repo_key, pr_details_list in prs_grouped_by_repository.items():
-        owner, repo_name = repo_key.split('/', 1)
-        print(f"\n--- Processing Repository: {owner}/{repo_name} ---")
-
-        repo_batch_successfully_fetched_and_saved = [] # List of (owner, repo, pr_number, diff_path, comments_path)
-        repo_batch_had_errors = False
-
-        for pr_info in pr_details_list:
-            pr_url = pr_info['url']
-            pr_number = pr_info['pr_number']
+    if args.pr_identifier:
+        # --- Single PR Mode ---
+        print(f"--- Running in Single PR Mode for: {args.pr_identifier} ---")
+        try:
+            g.get_user().login # Test connection and auth early
+            print(f"Authenticated as user: {g.get_user().login}")
+        except Exception as e:
+            print(f"Error testing GitHub connection/authentication: {e}", file=sys.stderr)
+            sys.exit(1)
             
-            print("-"*40)
-            print(f"Processing PR: {pr_url}")
-
-            if is_pr_processed(owner, repo_name, pr_number, processed_prs_by_repo_checkpoint):
-                print(f"PR {pr_url} already processed according to checkpoint. Skipping.")
-                all_prs_fully_processed_in_this_run_or_before.add((owner, repo_name, pr_number)) # Ensure it's counted
-                # No need to increment overall_success_count here as it's from a previous run.
-                # We only count successes for PRs processed *in this current run*.
-                continue
-
-            pr_processed_successfully_this_iteration = False
-            local_diff_path = None
-            local_comments_path = None
-            
+            owner, repo_name, pr_number_int, pr_url_to_fetch = None, None, None, None
             try:
-                # file_basename for this PR
-                file_basename = f"{owner}_{repo_name}_{pr_number}"
+                if "://" in args.pr_identifier and "/pull/" in args.pr_identifier:
+                    owner, repo_name, pr_number_int = parse_github_pr_url(args.pr_identifier)
+                    pr_url_to_fetch = args.pr_identifier
+                else:
+                    match = re.match(r"([^/]+)/([^/]+)/(\d+)", args.pr_identifier)
+                    if not match:
+                        raise ValueError(f"Invalid PR identifier format: \'{args.pr_identifier}\'. Expected \'owner/repo/number\' or a full URL.")
+                    owner, repo_name, pr_number_str = match.groups()
+                    pr_number_int = int(pr_number_str)
+                    pr_url_to_fetch = f"https://github.com/{owner}/{repo_name}/pull/{pr_number_int}"
                 
-                # Define local paths within the base output directory, organized by owner/repo
-                pr_specific_output_dir = local_output_path / owner / repo_name
-                pr_specific_output_dir.mkdir(parents=True, exist_ok=True)
-                local_diff_path = pr_specific_output_dir / f"{file_basename}.diff"
-                local_comments_path = pr_specific_output_dir / f"{file_basename}_comments.jsonl"
+                if not all([owner, repo_name, pr_number_int]): # Should be caught by parsing, but double check
+                     raise ValueError("Could not parse owner, repo, or PR number from identifier.")
 
-                # Fetch data (with rate limit retry loop)
-                # --- Inner retry loop for fetching data for a single PR ---
-                # max_diff_fetch_retries and current_diff_fetch_retry are removed as the
-                # specific error message they handled is no longer returned by fetch_pr_data.
-                # RateLimitExceededException will be caught and handled by the outer loop's mechanism.
-                
-                diff_text, comments_list, error_msg = None, None, None # Ensure these are defined before the loop
+                print(f"Processing PR: {owner}/{repo_name}/pull/{pr_number_int}")
 
-                while True: # This loop handles retries for a single PR
+                file_basename = f"{owner}_{repo_name}_{pr_number_int}"
+                # Save directly into local_output_path, not in owner/repo subdirs for single mode
+                local_diff_path = local_output_path / f"{file_basename}.diff"
+                local_comments_path = local_output_path / f"{file_basename}_comments.jsonl"
+
+                diff_text, comments_list, error_msg = None, None, None
+                fetch_attempts = 0
+                max_fetch_attempts = 3 # Max retries for the single PR
+
+                while fetch_attempts < max_fetch_attempts:
+                    fetch_attempts += 1
                     try:
-                        # error_msg is now only set by fetch_pr_data for non-RLE, non-fatal errors it returns.
-                        # If fetch_pr_data raises an exception (like RLE), it's caught below.
-                        # If it returns an error_msg, it's handled after the call.
-                        
-                        diff_text, comments_list, error_msg = fetch_pr_data(g, pr_url)
-                        
-                        if error_msg: # Any error message from fetch_pr_data that indicates failure to retrieve data
-                             # This will be caught by the outer PR processing exception handler
-                             raise Exception(f"fetch_pr_data for {pr_url} returned an error: {error_msg}")
-                        
-                        # If no error_msg and no exception, it means success
-                        break # Success from fetch_pr_data, exit retry loop for this PR
-
-                    except RateLimitExceededException as rle_inner: 
-                        # This is for PRIMARY GitHub API rate limits or if fetch_pr_data raised it due to Retry-After on diff
-                        print(f"RateLimitExceededException caught for {pr_url}. Determining wait time...", file=sys.stderr)
-                        
-                        # Check if the exception's headers (potentially from diff_response) have Retry-After
+                        print(f"Attempt {fetch_attempts}/{max_fetch_attempts} to fetch data for {pr_url_to_fetch}")
+                        diff_text, comments_list, error_msg = fetch_pr_data(g, pr_url_to_fetch)
+                        if error_msg:
+                            # This is a non-RLE, non-fatal error returned by fetch_pr_data
+                            # For single PR mode, we might want to retry a couple of times for transient issues.
+                            print(f"fetch_pr_data for {pr_url_to_fetch} returned an error: {error_msg}", file=sys.stderr)
+                            if fetch_attempts < max_fetch_attempts:
+                                print(f"Retrying in 10 seconds...")
+                                time.sleep(10)
+                                continue
+                            else:
+                                raise Exception(f"fetch_pr_data failed after {max_fetch_attempts} attempts: {error_msg}")
+                        break # Success
+                    except RateLimitExceededException as rle_inner:
+                        print(f"RateLimitExceededException caught for {pr_url_to_fetch} (Attempt {fetch_attempts}/{max_fetch_attempts}). Determining wait time...", file=sys.stderr)
                         specific_retry_after = None
                         if rle_inner.headers and 'Retry-After' in rle_inner.headers:
                             try:
                                 specific_retry_after = int(rle_inner.headers['Retry-After'])
-                                print(f"RateLimitExceededException for {pr_url} included Retry-After: {specific_retry_after}s.", file=sys.stderr)
-                            except ValueError:
-                                print(f"RateLimitExceededException for {pr_url} had unparsable Retry-After: {rle_inner.headers['Retry-After']}.", file=sys.stderr)
+                            except ValueError: pass
                         
                         if specific_retry_after is not None and specific_retry_after > 0:
-                            wait_seconds = specific_retry_after + 5 # Add a small buffer
-                            reset_time_for_log = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=wait_seconds)
-                            print(f"Waiting {wait_seconds:.0f}s based on specific Retry-After header from exception for {pr_url} (until ~{reset_time_for_log})...")
+                            wait_seconds = specific_retry_after + 5 
                         else:
-                            # Fallback to general GitHub API rate limit reset time
-                            print(f"No specific Retry-After in RLE for {pr_url} or it was invalid. Using general GitHub API reset time.", file=sys.stderr)
                             try:
-                                rate_limit_info = g.get_rate_limit().core # core, search, graphql, etc.
+                                rate_limit_info = g.get_rate_limit().core
                                 reset_time = rate_limit_info.reset
+                                wait_seconds = max((reset_time - datetime.datetime.now(datetime.timezone.utc)).total_seconds() + 15, 30)
                             except Exception as e_rl:
-                                print(f"Could not get primary rate limit info: {e_rl}. Waiting default 120s.", file=sys.stderr)
-                                reset_time = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=120)
-                            wait_seconds = max((reset_time - datetime.datetime.now(datetime.timezone.utc)).total_seconds() + 15, 30) # Add buffer, min wait
+                                print(f"Could not get primary rate limit info: {e_rl}. Waiting default 60s.", file=sys.stderr)
+                                wait_seconds = 60
                         
-                        print(f"Overall rate limit policy for {pr_url}: Waiting for {wait_seconds:.0f} seconds...")
-                        time.sleep(wait_seconds)
-                        # Loop will continue to retry fetching this PR's data
+                        if fetch_attempts < max_fetch_attempts:
+                            print(f"Waiting {wait_seconds:.0f} seconds for {pr_url_to_fetch}...")
+                            time.sleep(wait_seconds)
+                        else:
+                            print(f"Max retries reached for {pr_url_to_fetch} due to rate limiting.", file=sys.stderr)
+                            raise # Re-raise to be caught by the outer try-except
+                    # Other exceptions from fetch_pr_data (like GithubException not being RLE, requests.RequestException)
+                    # will be caught by the outer try-except for the single PR processing.
 
-                    # Other GithubException or general exceptions from fetch_pr_data will be caught by the outer try-except for the PR
-                    # (the one that sets repo_batch_had_errors = True) if they are not handled within fetch_pr_data
-                    # and re-raised, or if they are part of the 'error_msg' handling above.
-
-                # --- End of inner retry loop ---
-                # If we exited the loop, it means fetch_pr_data was successful (no error_msg and no unhandled exception)
-                
-                # Save locally (ensure diff_text is not None if we got here)
-                if diff_text is None: # Should not happen if loop logic is correct and fetch_pr_data succeeded
-                    print(f"Error: diff_text is None for {pr_url} after fetch attempts. Skipping save.", file=sys.stderr)
-                    raise Exception(f"diff_text was None for {pr_url} unexpectedly.")
+                if diff_text is None: # Should be caught by error_msg or exception if fetch failed
+                    print(f"Error: diff_text is None for {pr_url_to_fetch} after all fetch attempts. Exiting.", file=sys.stderr)
+                    sys.exit(1)
 
                 print(f"Saving diff locally to {local_diff_path}")
                 with open(local_diff_path, 'w', encoding='utf-8') as f_diff:
@@ -474,156 +418,340 @@ if __name__ == "__main__":
 
                 print(f"Saving comments locally to {local_comments_path}")
                 if not save_comments_to_jsonl(comments_list, local_comments_path):
-                     raise Exception(f"Failed to save comments locally for {pr_url}")
+                     # For an unreviewed PR, comments_list will be empty. save_comments_to_jsonl handles this gracefully.
+                     print(f"Note: Comments file {local_comments_path} saved (may be empty if no review comments).")
 
-                print(f"Successfully fetched and saved PR: {pr_url}")
-                pr_processed_successfully_this_iteration = True
-                repo_batch_successfully_fetched_and_saved.append({
-                    "owner": owner, "repo": repo_name, "pr_number": pr_number,
-                    "diff_path": local_diff_path, "comments_path": local_comments_path
-                })
+                print(f"Successfully fetched and saved single PR: {pr_url_to_fetch} to {local_output_path}")
+                # S3 upload and checkpointing are skipped in single PR mode when orchestrated by run_online_evaluation.py
+                # as --skip-remote-upload will be true.
+                sys.exit(0)
 
-            except ValueError as ve: # From parse_github_pr_url if it was somehow missed in grouping
-                print(f"Skipping invalid URL: {pr_url} - {ve}", file=sys.stderr)
-                repo_batch_had_errors = True
-            except GithubException as ge:
-                print(f"GitHub API error processing PR {pr_url}: {ge}. Will not be added to current batch.", file=sys.stderr)
-                repo_batch_had_errors = True
-            except Exception as pr_e:
-                print(f"Error processing PR {pr_url}: {pr_e}. Will not be added to current batch.", file=sys.stderr)
-                repo_batch_had_errors = True
-            
-            # Tally individual PR success/failure FOR THIS RUN
-            # This is different from overall_success_count which tracks PRs added to checkpoint.
-            # If pr_processed_successfully_this_iteration is false, it counts towards overall_failure_count for the run summary.
-            if not pr_processed_successfully_this_iteration and not is_pr_processed(owner, repo_name, pr_number, processed_prs_by_repo_checkpoint) :
-                 overall_failure_count +=1
+            except ValueError as ve: # From parsing identifier
+                print(f"Error processing --pr-identifier \'{args.pr_identifier}\': {ve}", file=sys.stderr)
+                sys.exit(1)
+            except GithubException as ge: # From PyGithub calls if not RLE and not handled inside fetch_pr_data
+                 print(f"A GitHub API error occurred while processing single PR \'{args.pr_identifier}\': {ge}", file=sys.stderr)
+                 sys.exit(1)
+            except requests.exceptions.RequestException as req_e: # From direct requests call in fetch_pr_data
+                 print(f"A network error occurred while processing single PR \'{args.pr_identifier}\': {req_e}", file=sys.stderr)
+                 sys.exit(1)
+            except Exception as e:
+                print(f"An unexpected error occurred in single PR mode for \'{args.pr_identifier}\': {type(e).__name__} - {e}", file=sys.stderr)
+                sys.exit(1)
+
+    elif args.input_pr_list:
+        # --- Batch Mode (Existing Logic) ---
+        try:
+            g.get_user().login # Test connection and auth for batch mode too
+            print(f"Authenticated as user: {g.get_user().login}")
+        except Exception as e:
+            print(f"Error testing GitHub connection/authentication for batch mode: {e}", file=sys.stderr)
+            sys.exit(1)
+
+        print("--- Running in Batch Mode (processing list of PRs from file) ---")
+        # --- Read PR List ---
+        all_input_pr_urls = []
+        try:
+            with open(args.input_pr_list, 'r') as f:
+                for line in f:
+                    url = line.strip()
+                    if url:
+                        all_input_pr_urls.append(url)
+            print(f"Read {len(all_input_pr_urls)} PR URLs from {args.input_pr_list}")
+        except FileNotFoundError:
+            print(f"Error: Input PR list file not found at {args.input_pr_list}", file=sys.stderr)
+            sys.exit(1)
+        except Exception as e:
+            print(f"Error reading input PR list {args.input_pr_list}: {e}", file=sys.stderr)
+            sys.exit(1)
+
+        if not all_input_pr_urls:
+            print("No PR URLs found in the input file. Exiting.")
+            sys.exit(0)
+        
+        # --- Group PRs by Repository ---
+        prs_grouped_by_repository = group_prs_by_repository(all_input_pr_urls)
+        if not prs_grouped_by_repository:
+            print("No valid PR URLs to process after grouping. Exiting.")
+            sys.exit(0)
+
+        # --- Processing Loop ---
+        overall_success_count = 0
+        overall_failure_count = 0
+        
+        # Store all successfully processed PRs (owner, repo, number) across all batches in this run
+        # to later compare with all_input_pr_urls for checkpoint deletion.
+        all_prs_fully_processed_in_this_run_or_before = set()
+        # Populate from existing checkpoint
+        for repo_key_chk, pr_nums_chk in processed_prs_by_repo_checkpoint.items():
+            owner_chk, repo_name_chk = repo_key_chk.split('/', 1)
+            for pr_num_chk in pr_nums_chk:
+                all_prs_fully_processed_in_this_run_or_before.add((owner_chk, repo_name_chk, pr_num_chk))
 
 
-        # --- After processing all PRs for the current repository ---
-        if repo_batch_successfully_fetched_and_saved:
-            batch_upload_successful_or_skipped = False
-            if args.skip_remote_upload:
-                print(f"Skipping remote S3 upload for repository {owner}/{repo_name} as per --skip-remote-upload flag.")
-                batch_upload_successful_or_skipped = True
-            else:
-                print(f"Attempting to upload batch for repository {owner}/{repo_name} to S3.")
-                # The path for rclone should be the parent directory containing all PR files for this repo
-                repo_data_path_for_upload = local_output_path / owner / repo_name
-                if upload_repository_batch_to_s3(config, repo_data_path_for_upload, owner, repo_name):
-                    print(f"Successfully uploaded batch for {owner}/{repo_name}.")
+        for repo_key, pr_details_list in prs_grouped_by_repository.items():
+            owner, repo_name = repo_key.split('/', 1)
+            print(f"\n--- Processing Repository: {owner}/{repo_name} ---")
+
+            repo_batch_successfully_fetched_and_saved = [] # List of (owner, repo, pr_number, diff_path, comments_path)
+            repo_batch_had_errors = False
+
+            for pr_info in pr_details_list:
+                pr_url = pr_info['url']
+                pr_number = pr_info['pr_number']
+                
+                print("-"*40)
+                print(f"Processing PR: {pr_url}")
+
+                if is_pr_processed(owner, repo_name, pr_number, processed_prs_by_repo_checkpoint):
+                    print(f"PR {pr_url} already processed according to checkpoint. Skipping.")
+                    all_prs_fully_processed_in_this_run_or_before.add((owner, repo_name, pr_number)) # Ensure it's counted
+                    # No need to increment overall_success_count here as it's from a previous run.
+                    # We only count successes for PRs processed *in this current run*.
+                    continue
+
+                pr_processed_successfully_this_iteration = False
+                local_diff_path = None
+                local_comments_path = None
+                
+                try:
+                    # file_basename for this PR
+                    file_basename = f"{owner}_{repo_name}_{pr_number}"
+                    
+                    # Define local paths within the base output directory, organized by owner/repo
+                    pr_specific_output_dir = local_output_path / owner / repo_name
+                    pr_specific_output_dir.mkdir(parents=True, exist_ok=True)
+                    local_diff_path = pr_specific_output_dir / f"{file_basename}.diff"
+                    local_comments_path = pr_specific_output_dir / f"{file_basename}_comments.jsonl"
+
+                    # Fetch data (with rate limit retry loop)
+                    # --- Inner retry loop for fetching data for a single PR ---
+                    # max_diff_fetch_retries and current_diff_fetch_retry are removed as the
+                    # specific error message they handled is no longer returned by fetch_pr_data.
+                    # RateLimitExceededException will be caught and handled by the outer loop's mechanism.
+                    
+                    diff_text, comments_list, error_msg = None, None, None # Ensure these are defined before the loop
+
+                    while True: # This loop handles retries for a single PR
+                        try:
+                            # error_msg is now only set by fetch_pr_data for non-RLE, non-fatal errors it returns.
+                            # If fetch_pr_data raises an exception (like RLE), it's caught below.
+                            # If it returns an error_msg, it's handled after the call.
+                            
+                            diff_text, comments_list, error_msg = fetch_pr_data(g, pr_url)
+                            
+                            if error_msg: # Any error message from fetch_pr_data that indicates failure to retrieve data
+                                 # This will be caught by the outer PR processing exception handler
+                                 raise Exception(f"fetch_pr_data for {pr_url} returned an error: {error_msg}")
+                                
+                            # If no error_msg and no exception, it means success
+                            break # Success from fetch_pr_data, exit retry loop for this PR
+
+                        except RateLimitExceededException as rle_inner: 
+                            # This is for PRIMARY GitHub API rate limits or if fetch_pr_data raised it due to Retry-After on diff
+                            print(f"RateLimitExceededException caught for {pr_url}. Determining wait time...", file=sys.stderr)
+                            
+                            # Check if the exception's headers (potentially from diff_response) have Retry-After
+                            specific_retry_after = None
+                            if rle_inner.headers and 'Retry-After' in rle_inner.headers:
+                                try:
+                                    specific_retry_after = int(rle_inner.headers['Retry-After'])
+                                    print(f"RateLimitExceededException for {pr_url} included Retry-After: {specific_retry_after}s.", file=sys.stderr)
+                                except ValueError:
+                                    print(f"RateLimitExceededException for {pr_url} had unparsable Retry-After: {rle_inner.headers['Retry-After']}.", file=sys.stderr)
+                            
+                            if specific_retry_after is not None and specific_retry_after > 0:
+                                wait_seconds = specific_retry_after + 5 # Add a small buffer
+                                reset_time_for_log = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=wait_seconds)
+                                print(f"Waiting {wait_seconds:.0f}s based on specific Retry-After header from exception for {pr_url} (until ~{reset_time_for_log})...")
+                            else:
+                                # Fallback to general GitHub API rate limit reset time
+                                print(f"No specific Retry-After in RLE for {pr_url} or it was invalid. Using general GitHub API reset time.", file=sys.stderr)
+                                try:
+                                    rate_limit_info = g.get_rate_limit().core # core, search, graphql, etc.
+                                    reset_time = rate_limit_info.reset
+                                except Exception as e_rl:
+                                    print(f"Could not get primary rate limit info: {e_rl}. Waiting default 120s.", file=sys.stderr)
+                                    reset_time = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=120)
+                                wait_seconds = max((reset_time - datetime.datetime.now(datetime.timezone.utc)).total_seconds() + 15, 30) # Add buffer, min wait
+                            
+                            print(f"Overall rate limit policy for {pr_url}: Waiting for {wait_seconds:.0f} seconds...")
+                            time.sleep(wait_seconds)
+                            # Loop will continue to retry fetching this PR's data
+
+                        # Other GithubException or general exceptions from fetch_pr_data will be caught by the outer try-except for the PR
+                        # (the one that sets repo_batch_had_errors = True) if they are not handled within fetch_pr_data
+                        # and re-raised, or if they are part of the 'error_msg' handling above.
+
+                    # --- End of inner retry loop ---
+                    # If we exited the loop, it means fetch_pr_data was successful (no error_msg and no unhandled exception)
+                    
+                    # Save locally (ensure diff_text is not None if we got here)
+                    if diff_text is None: # Should not happen if loop logic is correct and fetch_pr_data succeeded
+                        print(f"Error: diff_text is None for {pr_url} after fetch attempts. Skipping save.", file=sys.stderr)
+                        raise Exception(f"diff_text was None for {pr_url} unexpectedly.")
+
+                    print(f"Saving diff locally to {local_diff_path}")
+                    with open(local_diff_path, 'w', encoding='utf-8') as f_diff:
+                        f_diff.write(diff_text)
+
+                    print(f"Saving comments locally to {local_comments_path}")
+                    if not save_comments_to_jsonl(comments_list, local_comments_path):
+                         raise Exception(f"Failed to save comments locally for {pr_url}")
+
+                    print(f"Successfully fetched and saved PR: {pr_url}")
+                    pr_processed_successfully_this_iteration = True
+                    repo_batch_successfully_fetched_and_saved.append({
+                        "owner": owner, "repo": repo_name, "pr_number": pr_number,
+                        "diff_path": local_diff_path, "comments_path": local_comments_path
+                    })
+
+                except ValueError as ve: # From parse_github_pr_url if it was somehow missed in grouping
+                    print(f"Skipping invalid URL: {pr_url} - {ve}", file=sys.stderr)
+                    repo_batch_had_errors = True
+                except GithubException as ge:
+                    print(f"GitHub API error processing PR {pr_url}: {ge}. Will not be added to current batch.", file=sys.stderr)
+                    repo_batch_had_errors = True
+                except Exception as pr_e:
+                    print(f"Error processing PR {pr_url}: {pr_e}. Will not be added to current batch.", file=sys.stderr)
+                    repo_batch_had_errors = True
+                
+                # Tally individual PR success/failure FOR THIS RUN
+                # This is different from overall_success_count which tracks PRs added to checkpoint.
+                # If pr_processed_successfully_this_iteration is false, it counts towards overall_failure_count for the run summary.
+                if not pr_processed_successfully_this_iteration and not is_pr_processed(owner, repo_name, pr_number, processed_prs_by_repo_checkpoint) :
+                     overall_failure_count +=1
+
+
+            # --- After processing all PRs for the current repository ---
+            if repo_batch_successfully_fetched_and_saved:
+                batch_upload_successful_or_skipped = False
+                if args.skip_remote_upload:
+                    print(f"Skipping remote S3 upload for repository {owner}/{repo_name} as per --skip-remote-upload flag.")
                     batch_upload_successful_or_skipped = True
                 else:
-                    print(f"Failed to upload batch for repository {owner}/{repo_name} to S3. These PRs will not be checkpointed in this run.", file=sys.stderr)
-                    repo_batch_had_errors = True # Mark that this repo batch had errors at upload stage
-                     # PRs that were locally saved but failed to upload contribute to failure_count
-                    overall_failure_count += len(repo_batch_successfully_fetched_and_saved)
+                    print(f"Attempting to upload batch for repository {owner}/{repo_name} to S3.")
+                    # The path for rclone should be the parent directory containing all PR files for this repo
+                    repo_data_path_for_upload = local_output_path / owner / repo_name
+                    if upload_repository_batch_to_s3(config, repo_data_path_for_upload, owner, repo_name):
+                        print(f"Successfully uploaded batch for {owner}/{repo_name}.")
+                        batch_upload_successful_or_skipped = True
+                    else:
+                        print(f"Failed to upload batch for repository {owner}/{repo_name} to S3. These PRs will not be checkpointed in this run.", file=sys.stderr)
+                        repo_batch_had_errors = True # Mark that this repo batch had errors at upload stage
+                         # PRs that were locally saved but failed to upload contribute to failure_count
+                        overall_failure_count += len(repo_batch_successfully_fetched_and_saved)
 
 
-            if batch_upload_successful_or_skipped:
-                print(f"Updating checkpoint for repository {owner}/{repo_name}...")
-                repo_key_for_checkpoint = f"{owner}/{repo_name}"
-                if repo_key_for_checkpoint not in processed_prs_by_repo_checkpoint:
-                    processed_prs_by_repo_checkpoint[repo_key_for_checkpoint] = []
-                
-                newly_checkpointed_count_for_repo = 0
-                for pr_data in repo_batch_successfully_fetched_and_saved:
-                    # Add to checkpoint only if not already there (though skip logic should prevent this)
-                    if pr_data["pr_number"] not in processed_prs_by_repo_checkpoint[repo_key_for_checkpoint]:
-                        processed_prs_by_repo_checkpoint[repo_key_for_checkpoint].append(pr_data["pr_number"])
-                        all_prs_fully_processed_in_this_run_or_before.add((owner, repo_name, pr_data["pr_number"]))
-                        overall_success_count += 1 # This PR is now fully processed and checkpointed.
-                        newly_checkpointed_count_for_repo +=1
-                
-                if newly_checkpointed_count_for_repo > 0:
-                     # Sort PR numbers for consistent checkpoint file
-                    processed_prs_by_repo_checkpoint[repo_key_for_checkpoint].sort()
-                    save_checkpoint(checkpoint_file_path, processed_prs_by_repo_checkpoint)
-                else:
-                    print(f"No new PRs to checkpoint for {owner}/{repo_name} in this batch.")
-            else: # Batch upload failed
-                print(f"Skipping checkpoint update for {owner}/{repo_name} due to S3 upload failure or because all PRs in batch failed before upload stage.")
-        
-        elif not repo_batch_successfully_fetched_and_saved and not repo_batch_had_errors:
-             print(f"No new PRs processed for repository {owner}/{repo_name} in this run (all might have been skipped or input list for repo was empty).")
-
-
-    # --- Final Checkpoint Cleanup ---
-    all_input_prs_parsed_details = []
-    for url in all_input_pr_urls:
-        try:
-            owner_in, repo_in, pr_num_in = parse_github_pr_url(url)
-            all_input_prs_parsed_details.append((owner_in, repo_in, pr_num_in))
-        except ValueError:
-            pass # Already logged during grouping
-
-    # Check if every PR in the original input list is now considered processed
-    # (either from this run or a previous one via checkpoint)
-    # This means that all_prs_fully_processed_in_this_run_or_before must contain every item from all_input_prs_parsed_details
-    
-    # Corrected logic for checkpoint deletion:
-    # Only delete if there were NO failures in *this current run* AND all PRs from input list are in the checkpoint
-    
-    num_total_input_prs = len(all_input_prs_parsed_details)
-    num_successfully_processed_ever = len(all_prs_fully_processed_in_this_run_or_before)
-
-    can_delete_checkpoint = True
-    if overall_failure_count > 0: # If any PR failed in *this specific run*
-        print(f"Checkpoint file {checkpoint_file_path} will be kept due to {overall_failure_count} failures in this run.")
-        can_delete_checkpoint = False
-    else: # No failures in this run, now check if all input PRs are in the checkpoint
-        if num_successfully_processed_ever >= num_total_input_prs:
-            # Double check: every single PR from input must be in the 'all_prs_fully_processed_in_this_run_or_before' set
-            all_required_prs_are_processed = True
-            for req_owner, req_repo, req_pr_num in all_input_prs_parsed_details:
-                if (req_owner, req_repo, req_pr_num) not in all_prs_fully_processed_in_this_run_or_before:
-                    all_required_prs_are_processed = False
-                    print(f"Debug: Required PR {req_owner}/{req_repo}#{req_pr_num} not found in fully processed set for checkpoint deletion.")
-                    break
+                if batch_upload_successful_or_skipped:
+                    print(f"Updating checkpoint for repository {owner}/{repo_name}...")
+                    repo_key_for_checkpoint = f"{owner}/{repo_name}"
+                    if repo_key_for_checkpoint not in processed_prs_by_repo_checkpoint:
+                        processed_prs_by_repo_checkpoint[repo_key_for_checkpoint] = []
+                    
+                    newly_checkpointed_count_for_repo = 0
+                    for pr_data in repo_batch_successfully_fetched_and_saved:
+                        # Add to checkpoint only if not already there (though skip logic should prevent this)
+                        if pr_data["pr_number"] not in processed_prs_by_repo_checkpoint[repo_key_for_checkpoint]:
+                            processed_prs_by_repo_checkpoint[repo_key_for_checkpoint].append(pr_data["pr_number"])
+                            all_prs_fully_processed_in_this_run_or_before.add((owner, repo_name, pr_data["pr_number"]))
+                            overall_success_count += 1 # This PR is now fully processed and checkpointed.
+                            newly_checkpointed_count_for_repo +=1
+                    
+                    if newly_checkpointed_count_for_repo > 0:
+                         # Sort PR numbers for consistent checkpoint file
+                        processed_prs_by_repo_checkpoint[repo_key_for_checkpoint].sort()
+                        save_checkpoint(checkpoint_file_path, processed_prs_by_repo_checkpoint)
+                    else:
+                        print(f"No new PRs to checkpoint for {owner}/{repo_name} in this batch.")
+                else: # Batch upload failed
+                    print(f"Skipping checkpoint update for {owner}/{repo_name} due to S3 upload failure or because all PRs in batch failed before upload stage.")
             
-            if all_required_prs_are_processed:
-                print(f"All {num_total_input_prs} PRs from input list are processed and no failures in this run. Deleting checkpoint file.")
-                try:
-                    checkpoint_file_path.unlink(missing_ok=True)
-                except Exception as e:
-                    print(f"Error deleting checkpoint file {checkpoint_file_path}: {e}", file=sys.stderr)
-            else:
-                print(f"Checkpoint file {checkpoint_file_path} will be kept as not all PRs from the input list are fully processed yet (processed: {num_successfully_processed_ever}/{num_total_input_prs}).")
-                can_delete_checkpoint = False # Redundant given the flow but good for clarity
-        else:
-            print(f"Checkpoint file {checkpoint_file_path} will be kept. Not all PRs from input list are processed (processed: {num_successfully_processed_ever}/{num_total_input_prs}).")
+            elif not repo_batch_successfully_fetched_and_saved and not repo_batch_had_errors:
+                 print(f"No new PRs processed for repository {owner}/{repo_name} in this run (all might have been skipped or input list for repo was empty).")
+
+
+        # --- Final Checkpoint Cleanup ---
+        all_input_prs_parsed_details = []
+        for url in all_input_pr_urls:
+            try:
+                owner_in, repo_in, pr_num_in = parse_github_pr_url(url)
+                all_input_prs_parsed_details.append((owner_in, repo_in, pr_num_in))
+            except ValueError:
+                pass # Already logged during grouping
+
+        # Check if every PR in the original input list is now considered processed
+        # (either from this run or a previous one via checkpoint)
+        # This means that all_prs_fully_processed_in_this_run_or_before must contain every item from all_input_prs_parsed_details
+        
+        # Corrected logic for checkpoint deletion:
+        # Only delete if there were NO failures in *this current run* AND all PRs from input list are in the checkpoint
+        
+        num_total_input_prs = len(all_input_prs_parsed_details)
+        num_successfully_processed_ever = len(all_prs_fully_processed_in_this_run_or_before)
+
+        can_delete_checkpoint = True
+        if overall_failure_count > 0: # If any PR failed in *this specific run*
+            print(f"Checkpoint file {checkpoint_file_path} will be kept due to {overall_failure_count} failures in this run.")
             can_delete_checkpoint = False
+        else: # No failures in this run, now check if all input PRs are in the checkpoint
+            if num_successfully_processed_ever >= num_total_input_prs:
+                # Double check: every single PR from input must be in the 'all_prs_fully_processed_in_this_run_or_before' set
+                all_required_prs_are_processed = True
+                for req_owner, req_repo, req_pr_num in all_input_prs_parsed_details:
+                    if (req_owner, req_repo, req_pr_num) not in all_prs_fully_processed_in_this_run_or_before:
+                        all_required_prs_are_processed = False
+                        print(f"Debug: Required PR {req_owner}/{req_repo}#{req_pr_num} not found in fully processed set for checkpoint deletion.")
+                        break
+                
+                if all_required_prs_are_processed:
+                    print(f"All {num_total_input_prs} PRs from input list are processed and no failures in this run. Deleting checkpoint file.")
+                    try:
+                        checkpoint_file_path.unlink(missing_ok=True)
+                    except Exception as e:
+                        print(f"Error deleting checkpoint file {checkpoint_file_path}: {e}", file=sys.stderr)
+                else:
+                    print(f"Checkpoint file {checkpoint_file_path} will be kept as not all PRs from the input list are fully processed yet (processed: {num_successfully_processed_ever}/{num_total_input_prs}).")
+                    can_delete_checkpoint = False
+            else:
+                print(f"Checkpoint file {checkpoint_file_path} will be kept. Not all PRs from input list are processed (processed: {num_successfully_processed_ever}/{num_total_input_prs}).")
+                can_delete_checkpoint = False
 
 
-    # --- Summary ---
-    print("="*40)
-    print("Processing Summary:")
-    print(f"  Total PRs listed in input file: {len(all_input_pr_urls)}")
-    print(f"  Number of unique repositories processed: {len(prs_grouped_by_repository)}")
-    # overall_success_count is PRs NEWLY checkpointed in THIS RUN
-    print(f"  Successfully processed & checkpointed in this run: {overall_success_count}")
-    print(f"  Failed in this run (fetch, save, or upload): {overall_failure_count}")
-    print(f"  Total PRs in checkpoint (including previous runs): {sum(len(prs) for prs in processed_prs_by_repo_checkpoint.values())}")
-    print("="*40)
+        # --- Summary ---
+        print("="*40)
+        print("Processing Summary:")
+        print(f"  Total PRs listed in input file: {len(all_input_pr_urls)}")
+        print(f"  Number of unique repositories processed: {len(prs_grouped_by_repository)}")
+        # overall_success_count is PRs NEWLY checkpointed in THIS RUN
+        print(f"  Successfully processed & checkpointed in this run: {overall_success_count}")
+        print(f"  Failed in this run (fetch, save, or upload): {overall_failure_count}")
+        print(f"  Total PRs in checkpoint (including previous runs): {sum(len(prs) for prs in processed_prs_by_repo_checkpoint.values())}")
+        print("="*40)
 
-    if overall_failure_count > 0:
-        if overall_success_count > 0: # Some succeeded in this run, some failed
-            print(f"Completed with {overall_failure_count} errors, but {overall_success_count} PRs were successfully processed and checkpointed in this run.")
-            print("Proceeding with a partial dataset from this fetching stage.")
-            sys.exit(0) # Signal partial success to the orchestrator
-        else: # All attempts in this run resulted in failure (overall_success_count is 0)
-            print(f"Completed with {overall_failure_count} errors, and NO PRs were successfully processed and checkpointed in this run.")
-            print("Halting pipeline as the fetching stage produced no usable new data.")
-            sys.exit(1) # Signal failure to the orchestrator
-    else: # overall_failure_count == 0 (no errors in this specific run)
-        all_input_covered_by_checkpoint = True
-        for req_owner, req_repo, req_pr_num in all_input_prs_parsed_details:
-            if not is_pr_processed(req_owner, req_repo, req_pr_num, processed_prs_by_repo_checkpoint):
-                all_input_covered_by_checkpoint = False
-                break
-        if all_input_covered_by_checkpoint:
-             print("Completed successfully. All input PRs are accounted for in the checkpoint.")
-             sys.exit(0)
-        else:
-             print("Completed successfully for this run (no new errors). However, not all input PRs are in the checkpoint yet. Further runs may be needed.")
-             sys.exit(0)
+        if overall_failure_count > 0:
+            if overall_success_count > 0: # Some succeeded in this run, some failed
+                print(f"Completed with {overall_failure_count} errors, but {overall_success_count} PRs were successfully processed and checkpointed in this run.")
+                print("Proceeding with a partial dataset from this fetching stage.")
+                sys.exit(0) # Signal partial success to the orchestrator
+            else: # All attempts in this run resulted in failure (overall_success_count is 0)
+                print(f"Completed with {overall_failure_count} errors, and NO PRs were successfully processed and checkpointed in this run.")
+                print("Halting pipeline as the fetching stage produced no usable new data.")
+                sys.exit(1) # Signal failure to the orchestrator
+        else: # overall_failure_count == 0 (no errors in this specific run)
+            all_input_covered_by_checkpoint = True
+            for req_owner, req_repo, req_pr_num in all_input_prs_parsed_details:
+                if not is_pr_processed(req_owner, req_repo, req_pr_num, processed_prs_by_repo_checkpoint):
+                    all_input_covered_by_checkpoint = False
+                    break
+            if all_input_covered_by_checkpoint:
+                 print("Completed successfully. All input PRs are accounted for in the checkpoint.")
+                 sys.exit(0)
+            else:
+                 print("Completed successfully for this run (no new errors). However, not all input PRs are in the checkpoint yet. Further runs may be needed.")
+                 sys.exit(0)
+
+    else:
+        print("Error: Either --pr-identifier or --input-pr-list must be provided.", file=sys.stderr)
+        parser.print_help()
+        sys.exit(1)
