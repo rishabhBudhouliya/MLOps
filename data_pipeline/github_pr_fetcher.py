@@ -331,113 +331,107 @@ if __name__ == "__main__":
         # --- Single PR Mode ---
         print(f"--- Running in Single PR Mode for: {args.pr_identifier} ---")
         try:
-            g.get_user().login # Test connection and auth early
-            print(f"Authenticated as user: {g.get_user().login}")
+            # Test connection and auth first
+            user_login = g.get_user().login 
+            print(f"Authenticated as user: {user_login}")
         except Exception as e:
             print(f"Error testing GitHub connection/authentication: {e}", file=sys.stderr)
             sys.exit(1)
             
-            owner, repo_name, pr_number_int, pr_url_to_fetch = None, None, None, None
-            try:
-                if "://" in args.pr_identifier and "/pull/" in args.pr_identifier:
-                    owner, repo_name, pr_number_int = parse_github_pr_url(args.pr_identifier)
-                    pr_url_to_fetch = args.pr_identifier
-                else:
-                    match = re.match(r"([^/]+)/([^/]+)/(\d+)", args.pr_identifier)
-                    if not match:
-                        raise ValueError(f"Invalid PR identifier format: \'{args.pr_identifier}\'. Expected \'owner/repo/number\' or a full URL.")
-                    owner, repo_name, pr_number_str = match.groups()
-                    pr_number_int = int(pr_number_str)
-                    pr_url_to_fetch = f"https://github.com/{owner}/{repo_name}/pull/{pr_number_int}"
-                
-                if not all([owner, repo_name, pr_number_int]): # Should be caught by parsing, but double check
-                     raise ValueError("Could not parse owner, repo, or PR number from identifier.")
+        # This block is now correctly OUTSIDE the initial connection test try block
+        owner, repo_name, pr_number_int, pr_url_to_fetch = None, None, None, None
+        try:
+            if "://" in args.pr_identifier and "/pull/" in args.pr_identifier:
+                owner, repo_name, pr_number_int = parse_github_pr_url(args.pr_identifier)
+                pr_url_to_fetch = args.pr_identifier
+            else:
+                match = re.match(r"([^/]+)/([^/]+)/(\d+)", args.pr_identifier)
+                if not match:
+                    raise ValueError(f"Invalid PR identifier format: \'{args.pr_identifier}\'. Expected \'owner/repo/number\' or a full URL.")
+                owner, repo_name, pr_number_str = match.groups()
+                pr_number_int = int(pr_number_str)
+                pr_url_to_fetch = f"https://github.com/{owner}/{repo_name}/pull/{pr_number_int}"
+            
+            if not all([owner, repo_name, pr_number_int]):
+                 raise ValueError("Could not parse owner, repo, or PR number from identifier.")
 
-                print(f"Processing PR: {owner}/{repo_name}/pull/{pr_number_int}")
+            print(f"Processing PR: {owner}/{repo_name}/pull/{pr_number_int}")
 
-                file_basename = f"{owner}_{repo_name}_{pr_number_int}"
-                # Save directly into local_output_path, not in owner/repo subdirs for single mode
-                local_diff_path = local_output_path / f"{file_basename}.diff"
-                local_comments_path = local_output_path / f"{file_basename}_comments.jsonl"
+            file_basename = f"{owner}_{repo_name}_{pr_number_int}"
+            local_diff_path = local_output_path / f"{file_basename}.diff"
+            local_comments_path = local_output_path / f"{file_basename}_comments.jsonl"
 
-                diff_text, comments_list, error_msg = None, None, None
-                fetch_attempts = 0
-                max_fetch_attempts = 3 # Max retries for the single PR
+            diff_text, comments_list, error_msg = None, None, None
+            fetch_attempts = 0
+            max_fetch_attempts = 3
 
-                while fetch_attempts < max_fetch_attempts:
-                    fetch_attempts += 1
-                    try:
-                        print(f"Attempt {fetch_attempts}/{max_fetch_attempts} to fetch data for {pr_url_to_fetch}")
-                        diff_text, comments_list, error_msg = fetch_pr_data(g, pr_url_to_fetch)
-                        if error_msg:
-                            # This is a non-RLE, non-fatal error returned by fetch_pr_data
-                            # For single PR mode, we might want to retry a couple of times for transient issues.
-                            print(f"fetch_pr_data for {pr_url_to_fetch} returned an error: {error_msg}", file=sys.stderr)
-                            if fetch_attempts < max_fetch_attempts:
-                                print(f"Retrying in 10 seconds...")
-                                time.sleep(10)
-                                continue
-                            else:
-                                raise Exception(f"fetch_pr_data failed after {max_fetch_attempts} attempts: {error_msg}")
-                        break # Success
-                    except RateLimitExceededException as rle_inner:
-                        print(f"RateLimitExceededException caught for {pr_url_to_fetch} (Attempt {fetch_attempts}/{max_fetch_attempts}). Determining wait time...", file=sys.stderr)
-                        specific_retry_after = None
-                        if rle_inner.headers and 'Retry-After' in rle_inner.headers:
-                            try:
-                                specific_retry_after = int(rle_inner.headers['Retry-After'])
-                            except ValueError: pass
-                        
-                        if specific_retry_after is not None and specific_retry_after > 0:
-                            wait_seconds = specific_retry_after + 5 
-                        else:
-                            try:
-                                rate_limit_info = g.get_rate_limit().core
-                                reset_time = rate_limit_info.reset
-                                wait_seconds = max((reset_time - datetime.datetime.now(datetime.timezone.utc)).total_seconds() + 15, 30)
-                            except Exception as e_rl:
-                                print(f"Could not get primary rate limit info: {e_rl}. Waiting default 60s.", file=sys.stderr)
-                                wait_seconds = 60
-                        
+            while fetch_attempts < max_fetch_attempts:
+                fetch_attempts += 1
+                try:
+                    print(f"Attempt {fetch_attempts}/{max_fetch_attempts} to fetch data for {pr_url_to_fetch}")
+                    diff_text, comments_list, error_msg = fetch_pr_data(g, pr_url_to_fetch)
+                    if error_msg:
+                        print(f"fetch_pr_data for {pr_url_to_fetch} returned an error: {error_msg}", file=sys.stderr)
                         if fetch_attempts < max_fetch_attempts:
-                            print(f"Waiting {wait_seconds:.0f} seconds for {pr_url_to_fetch}...")
-                            time.sleep(wait_seconds)
+                            print(f"Retrying in 10 seconds...")
+                            time.sleep(10)
+                            continue
                         else:
-                            print(f"Max retries reached for {pr_url_to_fetch} due to rate limiting.", file=sys.stderr)
-                            raise # Re-raise to be caught by the outer try-except
-                    # Other exceptions from fetch_pr_data (like GithubException not being RLE, requests.RequestException)
-                    # will be caught by the outer try-except for the single PR processing.
-
-                if diff_text is None: # Should be caught by error_msg or exception if fetch failed
-                    print(f"Error: diff_text is None for {pr_url_to_fetch} after all fetch attempts. Exiting.", file=sys.stderr)
-                    sys.exit(1)
-
-                print(f"Saving diff locally to {local_diff_path}")
-                with open(local_diff_path, 'w', encoding='utf-8') as f_diff:
-                    f_diff.write(diff_text)
-
-                print(f"Saving comments locally to {local_comments_path}")
-                if not save_comments_to_jsonl(comments_list, local_comments_path):
-                     # For an unreviewed PR, comments_list will be empty. save_comments_to_jsonl handles this gracefully.
-                     print(f"Note: Comments file {local_comments_path} saved (may be empty if no review comments).")
-
-                print(f"Successfully fetched and saved single PR: {pr_url_to_fetch} to {local_output_path}")
-                # S3 upload and checkpointing are skipped in single PR mode when orchestrated by run_online_evaluation.py
-                # as --skip-remote-upload will be true.
-                sys.exit(0)
-
-            except ValueError as ve: # From parsing identifier
-                print(f"Error processing --pr-identifier \'{args.pr_identifier}\': {ve}", file=sys.stderr)
+                            raise Exception(f"fetch_pr_data failed after {max_fetch_attempts} attempts: {error_msg}")
+                    break 
+                except RateLimitExceededException as rle_inner:
+                    print(f"RateLimitExceededException caught for {pr_url_to_fetch} (Attempt {fetch_attempts}/{max_fetch_attempts}). Determining wait time...", file=sys.stderr)
+                    specific_retry_after = None
+                    if rle_inner.headers and 'Retry-After' in rle_inner.headers:
+                        try:
+                            specific_retry_after = int(rle_inner.headers['Retry-After'])
+                        except ValueError: pass
+                    
+                    if specific_retry_after is not None and specific_retry_after > 0:
+                        wait_seconds = specific_retry_after + 5 
+                    else:
+                        try:
+                            rate_limit_info = g.get_rate_limit().core
+                            reset_time = rate_limit_info.reset
+                            wait_seconds = max((reset_time - datetime.datetime.now(datetime.timezone.utc)).total_seconds() + 15, 30)
+                        except Exception as e_rl:
+                            print(f"Could not get primary rate limit info: {e_rl}. Waiting default 60s.", file=sys.stderr)
+                            wait_seconds = 60
+                    
+                    if fetch_attempts < max_fetch_attempts:
+                        print(f"Waiting {wait_seconds:.0f} seconds for {pr_url_to_fetch}...")
+                        time.sleep(wait_seconds)
+                    else:
+                        print(f"Max retries reached for {pr_url_to_fetch} due to rate limiting.", file=sys.stderr)
+                        raise 
+            if diff_text is None: 
+                print(f"Error: diff_text is None for {pr_url_to_fetch} after all fetch attempts. Exiting.", file=sys.stderr)
                 sys.exit(1)
-            except GithubException as ge: # From PyGithub calls if not RLE and not handled inside fetch_pr_data
-                 print(f"A GitHub API error occurred while processing single PR \'{args.pr_identifier}\': {ge}", file=sys.stderr)
-                 sys.exit(1)
-            except requests.exceptions.RequestException as req_e: # From direct requests call in fetch_pr_data
-                 print(f"A network error occurred while processing single PR \'{args.pr_identifier}\': {req_e}", file=sys.stderr)
-                 sys.exit(1)
-            except Exception as e:
-                print(f"An unexpected error occurred in single PR mode for \'{args.pr_identifier}\': {type(e).__name__} - {e}", file=sys.stderr)
-                sys.exit(1)
+
+            print(f"Saving diff locally to {local_diff_path}")
+            with open(local_diff_path, 'w', encoding='utf-8') as f_diff:
+                f_diff.write(diff_text)
+            print(f"DEBUG FETCHER: Wrote {len(diff_text) if diff_text else 'None'} bytes for {pr_url_to_fetch}. Path: {local_diff_path.resolve()}. Exists: {local_diff_path.exists()}") # DEBUG LINE
+
+            print(f"Saving comments locally to {local_comments_path}")
+            save_comments_to_jsonl(comments_list, local_comments_path) # Allow empty comments, returns True/False but we don't check strictly here for online eval
+            print(f"Note: Comments file {local_comments_path} saved (may be empty if no review comments).")
+
+            print(f"Successfully fetched and saved single PR: {pr_url_to_fetch} to {local_output_path}")
+            sys.exit(0)
+
+        except ValueError as ve:
+            print(f"Error processing --pr-identifier \'{args.pr_identifier}\': {ve}", file=sys.stderr)
+            sys.exit(1)
+        except GithubException as ge: 
+             print(f"A GitHub API error occurred while processing single PR \'{args.pr_identifier}\': {ge}", file=sys.stderr)
+             sys.exit(1)
+        except requests.exceptions.RequestException as req_e: 
+             print(f"A network error occurred while processing single PR \'{args.pr_identifier}\': {req_e}", file=sys.stderr)
+             sys.exit(1)
+        except Exception as e:
+            print(f"An unexpected error occurred in single PR mode for \'{args.pr_identifier}\': {type(e).__name__} - {e}", file=sys.stderr)
+            sys.exit(1)
 
     elif args.input_pr_list:
         # --- Batch Mode (Existing Logic) ---
