@@ -373,7 +373,7 @@ ONNX conversion required handling the limitations of Hugging Face’s `generate(
 
 - Used onnxruntime-gpu for serving.
 
-- Result: Model size reduced from 25GB to 8GB; inference latency improved from 10–12s (CPU) to ~3s (GPU).
+- Result: Model size reduced from 25GB to 8GB; inference latency improved from 10–12s to ~3s.
 
 This resulted in storing all the layers, tokens, mat_mul layers along with onnx file
 
@@ -412,7 +412,6 @@ Success criteria for real-world deployment:
 
 ### Online Evaluation
 
-- Conducted using artificial user requests from a Flask frontend and Jupyter scripts.
 - Monitored Metrics via Grafana:
   - Request latency (p50/p95/p99)
   - Throughput
