@@ -1,13 +1,11 @@
-version: '3.8'
-
 services:
   llama-code-review-fastapi:
-    build: ./model_serving/llama_code_review_app
+    build: llama_code_review_app
     container_name: llama-code-review-fastapi
     ports:
       - "8000:8000"
     volumes:
-      - ./model_serving/llama_code_review_app:/app
+      - ./llama_code_review_app:/app
       - /mnt/object:/mnt/object:ro
     deploy:
       resources:
@@ -33,7 +31,6 @@ services:
     volumes:
       - grafana-storage:/var/lib/grafana
     restart: always
-
 volumes:
   grafana-storage:
 
