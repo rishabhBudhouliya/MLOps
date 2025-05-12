@@ -25,7 +25,7 @@
       
     - name: Wait for workflow to complete (success or fail)
       shell: |
-        kubectl -n {{ argo_namespace }} wait --for=condition=Completed workflow/{{ workflow_name_generated }} --timeout=600s
+        kubectl -n {{ argo_namespace }} wait --for=condition=Completed workflow/{{ workflow_name_generated }} --timeout=1800s
       register: workflow_status
       failed_when: workflow_status.rc != 0
       
