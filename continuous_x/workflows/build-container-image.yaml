@@ -6,6 +6,11 @@ metadata:
 spec:
   entrypoint: kaniko-build-flow
 
+  arguments:
+    parameters:
+    - name: model-version
+      value: "latest"
+
   volumeClaimTemplates:
   - metadata:
       name: workdir
@@ -25,8 +30,8 @@ spec:
 
   - name: git-clone
     container:
-      image: alpine/git
-      command: [sh, -c]
+      image: alpine/git:2.43.0
+      command: [/bin/sh, -c]
       args:
         - |
           MAX_RETRIES=5
@@ -36,17 +41,22 @@ spec:
             i=$((i + 1))
             sleep 5
           done
+          
+          if [ $i -gt $MAX_RETRIES ]; then
+            echo "Failed to clone repository after $MAX_RETRIES attempts"
+            exit 1
+          fi
       volumeMounts:
       - name: workdir
         mountPath: /mnt/workspace
 
   - name: kaniko
     container:
-      image: gcr.io/kaniko-project/executor:latest
+      image: gcr.io/kaniko-project/executor:v1.23.0
       args:
         - --dockerfile=/mnt/workspace/Dockerfile
         - --context=/mnt/workspace
-        - --destination=registry.kube-system.svc.cluster.local:5000/code-reviewer-app:latest
+        - --destination=registry.kube-system.svc.cluster.local:5000/code-reviewer-app:{{workflow.parameters.model-version}}
         - --insecure
       volumeMounts:
       - name: workdir

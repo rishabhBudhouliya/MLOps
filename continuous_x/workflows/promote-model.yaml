@@ -1,4 +1,3 @@
-
 apiVersion: argoproj.io/v1alpha1
 kind: WorkflowTemplate
 metadata:
@@ -38,14 +37,29 @@ spec:
       - name: environment
       - name: model-version
     container:
-      image: argoproj/argocd:latest
-      command: [sh, -c]
+      image: argoproj/argocd:v2.9.3
+      command: [/bin/sh, -c]
       args:
         - |
+          set -e
           echo "Deploying version {{inputs.parameters.model-version}} to {{inputs.parameters.environment}} environment..."
           app_name="code-reviewer-{{inputs.parameters.environment}}"
-          argocd login argocd-server.argocd.svc.cluster.local \
-            --username admin --password "$ARGOCD_PASSWORD" --insecure
+          
+          # Attempt to log in with retry mechanism
+          max_attempts=3
+          attempt=0
+          while [ $attempt -lt $max_attempts ]; do
+            argocd login argocd-server.argocd.svc.cluster.local \
+              --username admin --password "$ARGOCD_PASSWORD" --insecure && break
+            attempt=$((attempt + 1))
+            sleep 5
+          done
+          
+          if [ $attempt -eq $max_attempts ]; then
+            echo "Failed to log in to ArgoCD after $max_attempts attempts"
+            exit 1
+          fi
+          
           argocd app set "$app_name" --helm-set-string image.tag="{{inputs.parameters.model-version}}"
           argocd app sync "$app_name"
       env:
