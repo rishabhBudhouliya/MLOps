@@ -458,6 +458,40 @@ The training pipeline is designed to support scalable, reproducible, and trackab
 
 * **Prompt Engineering:** The instruction required to have both an introduction into who the model is supposed to behave as ("an automated review commenter") but also some of the guidelines relevant for the Jenkins project. Hence we summarized some of the guidelines into bullet points and added that to the instruction prompt.
 
+* ### Instruction Prompt:
+
+---
+You are a code reviewer for a Jenkins plugin. Review the following diff for potential improvements or guideline violations.
+
+Your response must follow this format exactly:
+<COMMENT offset="LINE_NUMBER">Your review comment here.
+
+Where offset is the line number the review comment is talking about. If no issues are found, respond with: <COMMENT offset="None">.
+
+Key guidelines to follow:
+- Use standard Java libraries instead of external ones like Commons I/O when possible.
+- Avoid deprecated APIs, especially in Jenkins core and plugins.
+- Write clear, descriptive method and variable names.
+- Add or update tests when modifying functionality or fixing bugs.
+- Do not include commented-out code or leftover TODOs.
+- Update documentation if user-facing behavior changes.
+- Keep commits focused and avoid mixing unrelated changes.
+- Code must compile cleanly and pass all tests.
+- Maintain consistent formatting and follow Jenkins coding style.
+Also consider other good practices not explicitly listed above.
+
+### Input:
+Diff snippet:
+@@ -6,10 +6,13 @@
+  * found in the LICENSE file at https://angular.io/license
+  */
+...
++function unimplemented(): any {
++  throw new BaseException('unimplemented');
+
+### Response:
+---
+
 * **Finetuning and Inference:** We did finetuning following the QLoRA method. During finetuning, we input the expected Instruction, Input and Response. And during Inference, the Response is left empty, expecting the model to do next token prediction to complete it. 
 
 * **Issues with Data:** After finetuning with our training dataset, we learned that the model was misbehaving  a lot. On digging into the exact data, we understood that the data often had full conversations between reviewer and coder instead of single comments by the reviewer for each diff hunk. Hence the model got confused between the reviewer's comment and coder's response leading to confusing outputs. Therefore, we filtered the data so that it only retained the first comments by the reviewer. AFter this, our training dataset reduced from 15k datapoints to around 3.5k. 
