@@ -72,7 +72,7 @@ Metric to be judged on:
 
 ---
 
-# Data Lineage
+## Data Lineage
 ![Data lineage diagram](data_pipeline/datalineage-diagram.png)
 
 # System Design
@@ -131,12 +131,12 @@ The data pipeline is designed to discover, fetch, process, and store data, prima
 * **Dashboard Application**: The `dashboard/` directory contains the code for a data dashboard, likely using Streamlit (as indicated by `dashboard.Dockerfile`). `dashboard/app.py` would be the main Streamlit application file.
 * **Dashboard Container**: `dashboard.Dockerfile` defines how to build and run the dashboard application in a Docker container, exposing port 8888.
 
-## 3. Helper and Utility Files
+### 3. Helper and Utility Files
 
 * **Requirements**: `requirements.txt` lists the Python dependencies for the project.
 * **Notebooks**: `data-pipeline-script.ipynb` is likely a Jupyter notebook used for development, experimentation, or ad-hoc analysis related to the pipeline.
 
-## 4. Data Flow (Batch)
+### 4. Data Flow
 
 1. `run_pipeline.py` (or `docker compose run ... run-full-pipeline`) initiates the process.
 2. `discover_new_prs.py` identifies new PRs, outputting to `pipeline_intermediate/new_prs_to_process.txt`.
@@ -149,7 +149,7 @@ The data pipeline is designed to discover, fetch, process, and store data, prima
 This design allows for modular execution and development, with clear separation of concerns for different stages of data processing.
 
 
-# Data Pipeline – Commit Lineage
+## Data Pipeline – Commit Lineage
 
 *Chronological narrative of the path from the very first commit to the production-ready, online-evaluated service.*
 
