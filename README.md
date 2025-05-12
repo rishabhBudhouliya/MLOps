@@ -44,7 +44,7 @@ Metric to be judged on:
 ---
 ### System Diagram
 
-![](https://github.com/BugBeak/MLOps/blob/main/system_diagram.png?raw=true)
+![](systems.png?raw=true)
 
 
 
