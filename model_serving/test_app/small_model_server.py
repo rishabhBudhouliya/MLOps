@@ -8,7 +8,7 @@ import torch
 app = FastAPI(title="Code Review Comments Generator")
 
 # Define version file path
-VERSION_FILE = "/app/version.txt"
+# VERSION_FILE = "/app/version.txt"
 
 # Global model variables
 classifier = None
