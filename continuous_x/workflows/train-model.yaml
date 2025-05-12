@@ -1,103 +1,108 @@
+# train-model.yaml
 apiVersion: argoproj.io/v1alpha1
 kind: WorkflowTemplate
 metadata:
   name: train-model
 spec:
-  entrypoint: training-and-build
+  entrypoint: full-pipeline
+
+  # Define input parameters for flexibility
   arguments:
     parameters:
-    - name: github-repo
-    - name: training-dataset-version
+    - name: model-version
+      value: "v1.0.0"  # Default version if not specified
+
+  volumeClaimTemplates:
+  - metadata:
+      name: workdir
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      resources:
+        requests:
+          storage: 2Gi
 
   templates:
-  - name: training-and-build
+  - name: full-pipeline
     steps:
-      - - name: fetch-training-data
-          template: get-code-review-data
-          arguments:
-            parameters:
-            - name: github-repo
-              value: "{{workflow.parameters.github-repo}}"
-            - name: dataset-version
-              value: "{{workflow.parameters.training-dataset-version}}"
-      - - name: train-code-review-model
-          template: run-training
-          arguments:
-            parameters:
-            - name: dataset-path
-              value: "{{steps.fetch-training-data.outputs.result}}"
-      - - name: build-container
-          template: trigger-build
+      - - name: generate-version
+          template: generate-version
+      - - name: trigger-training-endpoint
+          template: call-endpoint
           arguments:
             parameters:
             - name: model-version
-              value: "{{steps.train-code-review-model.outputs.result}}"
-          when: "{{steps.train-code-review-model.outputs.result}} != ''"
+              value: "{{steps.generate-version.outputs.parameters.version}}"
+      - - name: build-and-deploy
+          template: trigger-pipeline
+          arguments:
+            parameters:
+            - name: model-version
+              value: "{{steps.generate-version.outputs.parameters.version}}"
 
-  - name: get-code-review-data
-    inputs:
-      parameters:
-      - name: github-repo
-      - name: dataset-version
+  - name: generate-version
     container:
-      image: python:3.11-slim
+      image: alpine:3.18
       command: [sh, -c]
       args:
         - |
-          pip install requests
-          python -c '
-          import os
-          import requests
-          import json
-          
-          # Download code review dataset from specified source
-          repo = "{{inputs.parameters.github-repo}}"
-          version = "{{inputs.parameters.dataset-version}}"
-          
-          # Logic to fetch dataset - this would be customized based on your data source
-          # For this example, assuming data is in S3/MinIO
-          
-          dataset_path = f"/tmp/code_review_data_{version}"
-          os.makedirs(dataset_path, exist_ok=True)
-          
-          print(dataset_path)
-          '
-      
-  - name: run-training
-    inputs:
-      parameters:
-      - name: dataset-path
-    container:
-      image: registry.kube-system.svc.cluster.local:5000/code-review-training:v0.1.0
-      command: [python, train.py]
-      args: ["--data-path", "{{inputs.parameters.dataset-path}}"]
+          VERSION="v1.0.0-$(date +%Y%m%d%H%M%S)"
+          mkdir -p /tmp/version
+          echo "$VERSION" > /tmp/version/version.txt
+          echo "$VERSION"
       volumeMounts:
-      - name: model-data
-        mountPath: /models
-      env:
-        - name: MLFLOW_TRACKING_URI
-          value: http://mlflow.project32-platform.svc.cluster.local:8000
+      - name: workdir
+        mountPath: /tmp/version
     outputs:
       parameters:
-      - name: result
+      - name: version
         valueFrom:
-          path: /models/version.txt
+          path: /tmp/version/version.txt
 
-  - name: trigger-build
+  - name: call-endpoint
     inputs:
       parameters:
       - name: model-version
-    resource:
-      action: create
-      manifest: |
-        apiVersion: argoproj.io/v1alpha1
-        kind: Workflow
-        metadata:
-          generateName: build-container-image-
-        spec:
-          workflowTemplateRef:
-            name: build-container-image
-          arguments:
-            parameters:
-            - name: model-version
-              value: "{{inputs.parameters.model-version}}"
+    container:
+      image: curlimages/curl:7.85.0
+      command: [sh, -c]
+      args:
+        - |
+          echo "Triggering training endpoint for version {{inputs.parameters.model-version}}..."
+          # Replace with actual training endpoint trigger
+          # Example (commented out):
+          # curl -X POST https://training-endpoint.example.com/train \
+          #      -H "Content-Type: application/json" \
+          #      -d '{"version": "{{inputs.parameters.model-version}}"}'
+      volumeMounts:
+      - name: workdir
+        mountPath: /tmp
+
+  - name: trigger-pipeline
+    inputs:
+      parameters:
+      - name: model-version
+    script:
+      image: alpine:3.18  # or python:3.11-slim or bash-based image
+      command: [sh, -c]
+      source: |
+        VERSION="{{inputs.parameters.model-version}}"
+        echo "Starting full pipeline for version $VERSION"
+
+        # Submit build container image workflow
+        argo submit --from workflowtemplate/build-container-image \
+          -p model-version="$VERSION" --wait
+
+        # Submit promotion to canary
+        argo submit --from workflowtemplate/promote-model \
+          -p source-environment=staging \
+          -p target-environment=canary \
+          -p model-version="$VERSION" --wait
+
+        # Submit promotion to production
+        argo submit --from workflowtemplate/promote-model \
+          -p source-environment=canary \
+          -p target-environment=prod \
+          -p model-version="$VERSION" --wait
+      volumeMounts:
+      - name: workdir
+        mountPath: /tmp
