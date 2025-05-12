@@ -77,7 +77,7 @@ Metric to be judged on:
 
 # System Design
 
-# Data Pipeline Design
+## Data Pipeline Design
 
 This document outlines the design of the data pipeline, referencing the relevant code files for each component.
 
