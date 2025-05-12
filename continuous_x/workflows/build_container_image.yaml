@@ -55,7 +55,7 @@ spec:
       command: [sh, -c]
       args:
         - |
-          git clone --branch main https://github.com/your-org/project32-code-reviewer.git /mnt/workspace
+          git clone --branch main https://github.com/BugBeak/MLOps.githttps://github.com/BugBeak/MLOps.git /mnt/workspace
       volumeMounts:
       - name: workdir
         mountPath: /mnt/workspace

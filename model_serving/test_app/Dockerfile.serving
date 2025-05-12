@@ -1,0 +1,24 @@
+FROM python:3.11-slim
+
+# Set work directory
+WORKDIR /app
+
+# Install dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt && \
+    # Reduce model download traffic by pre-downloading what we need
+    python -c "from transformers import AutoModel, AutoTokenizer; model_name='distilbert-base-uncased-finetuned-sst-2-english'; AutoModel.from_pretrained(model_name); AutoTokenizer.from_pretrained(model_name)"
+
+# Copy the server code
+COPY small_model_server.py fastapi_server.py
+COPY version.txt /app/version.txt
+
+# Expose FastAPI port
+EXPOSE 8000
+
+# Set environment variables to reduce memory usage
+ENV PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:32
+ENV TRANSFORMERS_OFFLINE=1
+
+# Run the FastAPI server with limited workers
+CMD ["uvicorn", "fastapi_server:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
