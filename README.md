@@ -294,7 +294,7 @@ The deployment strategy employs three distinct environments with separate Kubern
 - **`k8s/canary`**: 
 - **`k8s/production`**: 
 
-The ML model is served via a containerized FastAPI application. Upon workflow completion, the final image is deployed to staging. The deployment to canary and production environments is currently triggered manually, but the implementation to include integration tests and automatic promotion is fully included in the repository.
+The ML model is served via a containerized FastAPI application. Upon workflow completion, the final image is deployed to staging. The deployment to canary and production environments is currently triggered manually.
 
 Currently, there are dummy docker images added under training and model_serving that run through the pipeline. These images are referenced in the argocd configurations and k8s, and are served on all the staging, canary and production environements. 
 
