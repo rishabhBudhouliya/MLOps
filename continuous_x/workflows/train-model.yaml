@@ -82,22 +82,22 @@ spec:
       parameters:
       - name: model-version
     script:
-      image: argoproj/argoexec:v3.4.7
-      command: [/bin/sh, -c]
+      image: alpine:3.18  # or python:3.11-slim or bash-based image
+      command: [sh, -c]
       source: |
         VERSION="{{inputs.parameters.model-version}}"
         echo "Starting full pipeline for version $VERSION"
-        
+
         # Submit build container image workflow
         argo submit --from workflowtemplate/build-container-image \
           -p model-version="$VERSION" --wait
-        
+
         # Submit promotion to canary
         argo submit --from workflowtemplate/promote-model \
           -p source-environment=staging \
           -p target-environment=canary \
           -p model-version="$VERSION" --wait
-        
+
         # Submit promotion to production
         argo submit --from workflowtemplate/promote-model \
           -p source-environment=canary \
