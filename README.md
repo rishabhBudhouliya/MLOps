@@ -153,76 +153,69 @@ This design allows for modular execution and development, with clear separation 
 
 ## Phase 0 – Foundations (Apr 9 – 16, 2025)
 
-| Date       | Commit      | Message/Description                     | Why It Matters                                                                 |
-|------------|-------------|-----------------------------------------|--------------------------------------------------------------------------------|
-| 9 Apr 2025 | ef9a239     | Add data pipeline module                | First skeleton: config loader, PR fetcher, basic dir structure & deps.         |
-| 13 Apr 2025| 20bb1ef     | Two changes                             | Minor touch-ups to the fresh scaffold (requirements, ignores, etc.).           |
-| 16 Apr 2025| dff2b2d     | Add local data pipeline                 | End-to-end local runner (`run_pipeline.py`), discovery script, and YAML config → first working MVP. |
+| Date        | Commit                                                       | Message/Description      | Why It Matters                                               |
+|-------------|--------------------------------------------------------------|--------------------------|--------------------------------------------------------------|
+| 9 Apr 2025  | [ef9a239](https://github.com/BugBeak/MLOps/commit/ef9a2395028aa412d3a92808883297935aece4b2) | Add data pipeline module | First skeleton: config loader, PR fetcher, basic dir structure & deps. |
+| 16 Apr 2025 | [dff2b2d](https://github.com/BugBeak/MLOps/commit/dff2b2dd3d97e4907d3b2af62b10d613b19289a5) | Add local data pipeline  | End-to-end local runner (`run_pipeline.py`), discovery script, and YAML config → first working MVP. |
 
 ---
 
-## Phase 1 – Containerisation & Reproducibility (Apr 26 – May 1, 2025)
+## Phase 1 – Containerization & Reproducibility (Apr 26 – May 1, 2025)
 
-| Date       | Commit      | Message/Description                     | Why It Matters                                                                 |
-|------------|-------------|-----------------------------------------|--------------------------------------------------------------------------------|
-| 26 Apr 2025| 013fd67     | Add dockerized pipeline architecture     | `Dockerfile`, `docker-compose.yml`, and improved PR-discovery CLI – pipelines now run identically on any host. |
-| 1 May 2025 | 3613035     | Add data pipeline provisioning + execution script | Introduces `run_pipeline.py`, `load_data.py`, helper notebooks, and Chi Cloud provisioning – setting the stage for CI/CD & infra-as-code. |
+| Date        | Commit                                                       | Message/Description                               | Why It Matters                                               |
+|-------------|--------------------------------------------------------------|---------------------------------------------------|--------------------------------------------------------------|
+| 26 Apr 2025 | [013fd67](https://github.com/BugBeak/MLOps/commit/013fd679eac7635ccbf9031a711eeced1819d964) | Add dockerized pipeline architecture              | `Dockerfile`, `docker-compose.yml`, and improved PR-discovery CLI – pipelines now run identically on any host. |
+| 1 May 2025  | [3613035](https://github.com/BugBeak/MLOps/commit/36130355d87ec37c35914c8f0acc5cf75061b4a6) | Add data pipeline provisioning + execution script | Introduces `run_pipeline.py`, `load_data.py`, helper notebooks, and Chi Cloud provisioning – setting the stage for CI/CD & infra-as-code. |
 
 ---
 
 ## Phase 2 – Reliability & Resilience (May 7 – 8, 2025)
 
-| Date       | Commit      | Message/Description                     | Why It Matters                                                                 |
-|------------|-------------|-----------------------------------------|--------------------------------------------------------------------------------|
-| 7 May 2025 | ec05f54     | Checkpointing fetcher to resume after crashes | Hardens pipeline against crashes.                                              |
-| 7 May 2025 | eb5d220     | Graceful back-off when GitHub API hits secondary-rate-limit | Improves resilience against API throttling.                                    |
-| 8 May 2025 | acb8e6b     | Verbose debug-logging across stages     | Enhances debugging capabilities.                                               |
-| 8 May 2025 | 96c0c6a     | Correct alignment of review comments to diff hunks | Critical data integrity fix.                                                   |
-| 8 May 2025 | e63c634, 25931fa, 9417152 | Header fixes & incremental refactors | Improves code quality and maintainability.                                     |
+| Date       | Commit                                                       | Message/Description                                         | Why It Matters                              |
+|------------|--------------------------------------------------------------|-------------------------------------------------------------|---------------------------------------------|
+| 7 May 2025 | [ec05f54](https://github.com/BugBeak/MLOps/commit/ec05f548be1e977235dc8d46de04f51e70aa3668) | Checkpointing fetcher to resume after crashes               | Hardens pipeline against crashes.           |
+| 7 May 2025 | [eb5d220](https://github.com/BugBeak/MLOps/commit/eb5d220ebef3c548146dfebcbf3e72aa06f95a92) | Graceful back-off when GitHub API hits secondary-rate-limit | Improves resilience against API throttling. |
+| 8 May 2025 | [96c0c6a](https://github.com/BugBeak/MLOps/commit/96c0c6a54e7113b98b15869966a57f96f0b670f8) | Correct alignment of review comments to diff hunks          | Critical data integrity fix.                |
 
 ---
 
-## Phase 3 – Scaling Out & Multi-Repo Support (May 9, 2025)
+## Phase 3 – Scaling Out & Multi-Repo Support (May 8, 2025)
 
-| Date       | Commit      | Message/Description                     | Why It Matters                                                                 |
-|------------|-------------|-----------------------------------------|--------------------------------------------------------------------------------|
-| 9 May 2025 | 0551ffa, ea70ada | Expanded `config.yaml` for OSS repos | Adds dozens of high-signal OSS repos to crawl.                                 |
-| 9 May 2025 | 61e2647     | Multi-threaded Rclone uploads           | 4× faster S3 pushes.                                                           |
-| 9 May 2025 | 0ae29ad     | Optimized PR-fetcher for batched requests | Improves fetching efficiency.                                                  |
-| 9 May 2025 | 327bf4a, 0631b5e | Pipeline & logging tweaks            | Enhances support for long-running jobs.                                        |
+| Date       | Commit                                                       | Message/Description                  | Why It Matters                                 |
+|------------|--------------------------------------------------------------|--------------------------------------|------------------------------------------------|
+| 8 May 2025 | [0551ffa](https://github.com/BugBeak/MLOps/commit/0551ffaef946e0131dd6525d33d6ab5b37b45b74), [ea70ada](https://github.com/BugBeak/MLOps/commit/ea70ada4583b99fbeeffce9dca21f2fd48b1e561) | Expanded `config.yaml` for OSS repos | Adds dozens of high-signal OSS repos to crawl. |
+| 8 May 2025 | [61e2647](https://github.com/BugBeak/MLOps/commit/61e26476af5273746eb27a48c430924a4ba6b60c) | Multi-threaded Rclone uploads        | 4× faster object-store pushes.                 |
 
 ---
 
 ## Phase 4 – Observability (May 9 – 10, 2025)
 
-| Date       | Commit      | Message/Description                     | Why It Matters                                                                 |
-|------------|-------------|-----------------------------------------|--------------------------------------------------------------------------------|
-| 9 May 2025 | 96d973e     | Streamlit dashboard (`dashboard/app.py` + Dockerfile) | Instant exploratory analytics.                                                 |
-| 10 May 2025| 9b953da, 42813c7, 46ca1e8, 26498e5 | UI polish, Docker hardening, dashboard wired to silver dataset | Improves dashboard functionality and reliability.                              |
+| Date        | Commit                                                       | Message/Description                                          | Why It Matters                                    |
+|-------------|--------------------------------------------------------------|--------------------------------------------------------------|---------------------------------------------------|
+| 9 May 2025  | [96d973e](https://github.com/BugBeak/MLOps/commit/96d973e550010870de1979cdaf0147ef9cc185ad) | Streamlit dashboard (`dashboard/app.py` + Dockerfile)        | Instant exploratory analytics.                    |
+| 10 May 2025 | [9b953da](https://github.com/BugBeak/MLOps/commit/9b953daf5377bde4fa9618f2b1bf59d298fad73d), 42813c7, 46ca1e8, 26498e5 | UI polish, Docker hardening, dashboard wired to silver dataset | Improves dashboard functionality and reliability. |
 
 ---
 
 ## Phase 5 – Online Evaluation & Production Readiness (May 11, 2025)
 
-| Date       | Commit      | Message/Description                     | Why It Matters                                                                 |
-|------------|-------------|-----------------------------------------|--------------------------------------------------------------------------------|
-| 11 May 2025| cb13107     | Online evaluation mode                  | Dedicated image (`Dockerfile.online_evaluation`) & `run_online_evaluation.py` for near-real-time processing. |
-| 11 May 2025| a872376, 983ef18, fcf847a | Updated Compose, scripts, Dockerfiles | Enables batch and online services to run side-by-side.                         |
-| 11 May 2025| 9d7ed5c     | Minor tweaks after smoke tests          | Ensures stability post-testing.                                                |
+| Date        | Commit                                                       | Message/Description      | Why It Matters                                               |
+|-------------|--------------------------------------------------------------|--------------------------|--------------------------------------------------------------|
+| 11 May 2025 | [cb13107](https://github.com/BugBeak/MLOps/commit/cb13107feb9babc239f058b313ff00189bb3e561) | Online evaluation mode   | Dedicated image (`Dockerfile.online_evaluation`) & `run_online_evaluation.py` for near-real-time processing. |
+| 11 May 2025 | [9d7ed5c](https://github.com/BugBeak/MLOps/commit/9d7ed5cdb00768de356458b01a780b463765be95) | Minor tweaks after tests | Ensures stability post-testing.                              |
 
 ---
 
 ## Phase 6 – Merge & Polish (May 12, 2025)
 
-| Date       | Commit      | Message/Description                     | Why It Matters                                                                 |
-|------------|-------------|-----------------------------------------|--------------------------------------------------------------------------------|
-| 12 May 2025| 1f224ef     | Merge PR online-data-pipeline to `main` | Freezes MVP for production deployment.                                         |
-| 12 May 2025| 812de64, 5fe876c | Notebook refactor for pipeline & dashboard demos | Improves documentation and usability.                                          |
-| 12 May 2025| ec2f5a4     | Repo cleanup                            | Removes stray placeholder files.                                               |
+| Date        | Commit                                                       | Message/Description                              | Why It Matters                        |
+|-------------|--------------------------------------------------------------|--------------------------------------------------|---------------------------------------|
+| 12 May 2025 | [812de64](https://github.com/BugBeak/MLOps/commit/812de64a7d72cf6d627e62db7df778e03421db69), [5fe876c](https://github.com/BugBeak/MLOps/commit/5fe876c313a44a16f7328964a9f4ca99d3fce91b) | Notebook refactor for pipeline & dashboard demos | Improves documentation and usability. |
+| 12 May 2025 | [ec2f5a4](https://github.com/BugBeak/MLOps/commit/ec2f5a4219f68a861d16158bd90a05bb93f1bfaf) | Repo cleanup                                     | Removes stray placeholder files.      |
 
 ---
 
-## Current Status
+## Current Status of data-pipeline
 
 By 12 May 2025, the project supports:
 
