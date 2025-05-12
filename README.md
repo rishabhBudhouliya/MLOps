@@ -480,6 +480,8 @@ The training pipeline is designed to support scalable, reproducible, and trackab
 
 ## 5. Experiment Tracking
 
+![](training/mlflowimg.png?raw=true)
+
 * MLflow is used to log experiment metrics and then step wise training metrics during final finetuning.
 
 ---
