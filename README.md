@@ -432,7 +432,7 @@ Model Degradation:
 - Alert rules can notify for re-training triggers based on quality drop.
 
 
- ## Model Training Pipeline Design
+## Model Training Pipeline Design
 
 This document outlines the design of the **model training pipeline**, referencing relevant code files, container setup, and orchestration methods.
 
@@ -451,24 +451,35 @@ The training pipeline is designed to support scalable, reproducible, and trackab
 * **Docker Compose**: docker files defines services for the Jupyter server, MLflow, and training container. It mounts object stores and enables volume sharing. 
 
 
+## 3. Modeling Logic
 
-## 3. Training Logic
+* **The modeling problem**: Since our project requires a good understanding of code, we decided to look into the best performing open source code trained LLMs. DeepSeek Coder and CodeLlama were two names that jumped out, where the first was performing better than models 10x beigger than it. Hence we first decided to experiment with DeepSeek Coder V2, which is a Mixture of Experts model. We learned that it also has an Instruct model which turned out be more relevant for our purposes as our task is more complex than code understanding, we want it to comment on shortcomings of the code. But int he middle of the project, we learned that even with float16 and later quantization, this 16B parameter model was to cumbersome for our needs. Hence we had to shift to a CodeLlama 7B parameter model.
+
+* **Input/Output to the model:** The input to the model has to come in the form of a prompt containing an "Instruction" and "Input" and the output is the "Response". Hence we restructured the data produced by the data pipeline into a prompt. The input was the diff hunk, and the Response was the comment along with the Offset, which is the location of the code in the diff hunk that's being specifically commented on. While we considered giving a larger context of the entire diff file of the commit instead of the diff hunk, we soon realzied that the context length of the models wouldn't allow such an input. Hence we stuck to the diff hunk.
+
+* **Prompt Engineering:** The instruction required to have both an introduction into who the model is supposed to behave as ("an automated review commenter") but also some of the guidelines relevant for the Jenkins project. Hence we summarized some of the guidelines into bullet points and added that to the instruction prompt.
+
+* **Finetuning and Inference:** We did finetuning following the QLoRA method. During finetuning, we input the expected Instruction, Input and Response. And during Inference, the Response is left empty, expecting the model to do next token prediction to complete it. 
+
+* **Issues with Data:** After finetuning with our training dataset, we learned that the model was misbehaving  a lot. On digging into the exact data, we understood that the data often had full conversations between reviewer and coder instead of single comments by the reviewer for each diff hunk. Hence the model got confused between the reviewer's comment and coder's response leading to confusing outputs. Therefore, we filtered the data so that it only retained the first comments by the reviewer. AFter this, our training dataset reduced from 15k datapoints to around 3.5k. 
+
+* **Issues with Offset:** After finetuning, we also noticed that the model wasn't successful in predicting the offset. Hence we removed the Location accuracy metric from our evaluations altogether. This is probably because of the small diff hunk size which led to confusion, as well as complexity
+
+
+
+## 4. Training Logic
 
 
 * The codellama/CodeLlama-7b-Instruct-hf model is loaded using HuggingFace’s `AutoModelForCausalLM` with `bitsandbytes` for 4-bit quantization and `peft` for LoRA.
 * Tokenizer is auto-loaded and used for padding, truncation, and formatting.
 * Tested with DeepSeek Coder V2 Instruct model before but it turned out to be too heavy.
-
-
-### 3.3. Fine-Tuning & Evaluation
-
 * Training is managed by `SFTTrainer` (from `trl`) or HuggingFace’s `Trainer` API.
 * Evaluation includes token-level loss and optional semantic similarity via `bertscore`.
 * Model checkpoints are saved periodically. Final model pushed to object store
 
 ---
 
-## 4. Experiment Tracking
+## 5. Experiment Tracking
 
 * MLflow is used to log experiment metrics and then step wise training metrics during final finetuning.
 
@@ -484,8 +495,6 @@ The training pipeline is designed to support scalable, reproducible, and trackab
 ## 7. Development Environment
 
 * Notebooks like "demo_" were used for initial probing of how to get models working.
-
-
 
 
 
