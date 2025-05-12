@@ -151,7 +151,7 @@ This design allows for modular execution and development, with clear separation 
 
 ## Data Pipeline – Commit Lineage
 
-*Chronological narrative of the path from the very first commit to the production-ready, online-evaluated service.*
+Chronological narrative of the path from the very first commit to the current state
 
 ---
 
