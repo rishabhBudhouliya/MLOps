@@ -272,6 +272,7 @@ Critical platform services are deployed using Helm charts defined in `k8s/platfo
 These services are configured via `argocd_add_platform.yml` and can be monitored through both the Kubernetes dashboard and ArgoCD UI. The containerization of these services and their management through Helm charts achieves the cloud-native approach required for enterprise-grade machine learning operations.
 
 Argocd dashboard: 
+![](continuous_x/argo dash.png?raw=true)
 
 ### CI/CD and Continuous Training (Argo Workflows)
 
@@ -288,9 +289,9 @@ Currently, workflow triggering is performed via POST requests to an HTTP endpoin
 
 The deployment strategy employs three distinct environments with separate Kubernetes namespaces:
 
-- **`k8s/staging`**: 
-- **`k8s/canary`**: 
-- **`k8s/production`**: 
+- **`k8s/staging`**
+- **`k8s/canary`** 
+- **`k8s/production`** 
 
 The ML model is served via a containerized FastAPI application. Upon workflow completion, the final image is deployed to staging. The deployment to canary and production environments is currently triggered manually.
 
