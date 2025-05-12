@@ -396,3 +396,62 @@ Comprehensive monitoring via Prometheus & Grafana
 
  Scalable deployment on Chameleon Cloud (A100 GPU)
 
+
+ ## Model Training Pipeline Design
+
+This document outlines the design of the **model training pipeline**, referencing relevant code files, container setup, and orchestration methods.
+
+---
+
+## 1. Overview
+
+The training pipeline is designed to support scalable, reproducible, and trackable model training runs on Chameleon Cloud GPU infrastructure. It supports fine-tuning and retraining of Code LLM using parameter-efficient methods and integrates with experiment tracking tools like MLflow. The pipeline is containerized in notebook and efforts were made so it can be executed via scripts inside Docker-managed environments as well.
+
+---
+
+## 2. Notebooks
+
+* **Training Notebooks**: [`training_Fineturning.ipynb`](https://github.com/BugBeak/MLOps/blob/main/training/notebooks/training_Finetuning.ipynb)) is the primary training notebook used for both fine-tuning. ['training_createserver.ipynb'](https://github.com/BugBeak/MLOps/blob/main/training/notebooks/training_createserver.ipynb) is used to create containers server on A100 GPU using docker files. It handles data loading, model loading, trainer configuration, evaluation, and logging. We also load the two object stores (for data and model)
+
+* **Docker Compose**: docker files defines services for the Jupyter server, MLflow, and training container. It mounts object stores and enables volume sharing. 
+
+
+
+## 3. Training Logic
+
+
+* The codellama/CodeLlama-7b-Instruct-hf model is loaded using HuggingFace’s `AutoModelForCausalLM` with `bitsandbytes` for 4-bit quantization and `peft` for LoRA.
+* Tokenizer is auto-loaded and used for padding, truncation, and formatting.
+* Tested with DeepSeek Coder V2 Instruct model before but it turned out to be too heavy.
+
+
+### 3.3. Fine-Tuning & Evaluation
+
+* Training is managed by `SFTTrainer` (from `trl`) or HuggingFace’s `Trainer` API.
+* Evaluation includes token-level loss and optional semantic similarity via `bertscore`.
+* Model checkpoints are saved periodically. Final model pushed to object store
+
+---
+
+## 4. Experiment Tracking
+
+* MLflow is used to log experiment metrics and then step wise training metrics during final finetuning.
+
+---
+
+## 6. Object Store & rclone
+
+* `rclone` is used to mount Chameleon Cloud object stores.
+* Configuration is handled by [`rclone.conf`](rclone/rclone.conf)
+
+---
+
+## 7. Development Environment
+
+* Notebooks like "demo_" were used for initial probing of how to get models working.
+
+
+
+
+
+
