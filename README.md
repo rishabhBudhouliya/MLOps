@@ -322,84 +322,114 @@ The Continuous X implementation satisfies all specified requirements:
 
 ---
 
-# Model Serving 
+# Model Serving and Evaluation
+
+### Serving from an API Endpoint
+The model is deployed behind a FastAPI server, containerized using Docker, and runs on a GPU-enabled instance with CUDA and cuDNN support.
+
+Endpoints:
+- `GET /`: Health check (returns JSON)
+- `POST /predict`:  
+  - Input: JSON with `code_diff` (a code change snippet)  
+  - Process:
+    - Constructs a structured prompt.
+    - Tokenizes it using a preloaded tokenizer.
+    - Feeds tokenized input to ONNXRuntime using `CUDAExecutionProvider`.
+    - Decodes the output logits into review comments.
+  - Output: Review comments with latency info.
+
+- `POST /feedback`:  
+  - Input: JSON with `original_prompt`, `model_output`, `user_feedback`, and `case_type` (1: accepted, 2: modified, 3: rewritten).  
+  - Output: Acknowledges feedback for retraining.
+  
+- `GET /metrics`: Auto-generated via `prometheus-fastapi-instrumentator`, exposing:
+  - Request counts
+  - Latency histograms
+  - Error rates
+  - Throughput metrics
+
+### Identifying Requirements
+Model Requirements:
+- Low latency (3-4s average) for real-time usability.
+- Concurrency support using `async def` and `await`.
+- GPU-based inference using ONNX Runtime with CUDA backend.
+
+I/O Requirements:
+- Input: Raw code diff.
+- Output: Structured review comments.
+- Feedback capture for improving model post-deployment.
+
+### Model Optimizations
+
+ONNX conversion required handling the limitations of Hugging Face’s `generate()` method:
+
+- Replaced generate() method (unsupported in ONNX) with forward() export using use_cache=False to simplify export.
+
+- Adjusted opset_version to 17 for compatibility.
+
+- Used export_params=True and do_constant_folding=True for efficient inference.
+
+- Enabled external_data=True to handle large model size during export.
+
+- Used onnxruntime-gpu for serving.
+
+- Result: Model size reduced from 25GB to 8GB; inference latency improved from 10–12s (CPU) to ~3s (GPU).
+
+This resulted in storing all the layers, tokens, mat_mul layers along with onnx file
 
 
-# Model evaluation and Monitoring 
+### System Optimizations
 
-### Directory Overview
-model_optimizations/llama_optimizations.ipynb
-Performed dynamic quantization on the original model to reduce size from 30GB to 5GB.
+- Implemented FastAPI with `async def` for concurrent handling of multiple requests.
+- Integrated Prometheus for real-time metrics instrumentation.
+- Containerized model using Docker with GPU support and shared object storage for model files.
 
-Achieved an average inference latency of ~5 seconds on GPU (ONNX Runtime).
+### Offline Evaluation
 
-Optimized version is used for serving in production.
+Evaluation uses a multilingual test set containing real code changes and reviewer comments.
 
-resources.ipynb
-Provisioned a GPU-enabled bare-metal server on Chameleon Cloud:
+Metrics (BERTScore):
 
-Used chi Python client to automate VM setup.
-
-Configured networking, floating IP, and verified SSH connectivity.
- Installed Docker CE and set up NVIDIA Container Toolkit for GPU support.
-Verified access to A100 GPU (gigaio_04, 40GB RAM) using nvidia-smi.
-
-persistent_data_access/
-Mounts object stores and volumes that contain:
-
-The base and quantized models.
-
-Datasets and tokenizers used for inference.
-
-Optimized artifacts used in deployment.
-
-llama_code_review_app/ — Core FastAPI Service
-A lightweight, production-ready FastAPI app that powers model inference and feedback logging:
-
-GET /: Health check endpoint.
-
-POST /predict: Accepts a code diff and returns structured review comments.
-
-POST /feedback: Captures user feedback (accepted, modified, or rewritten) to help with future retraining.
-
-GET /metrics: Exposes Prometheus-compatible metrics including:
-
-Inference latency
-
-Throughput
-
-Feedback counts
-
- prometheus/
-Contains prometheus.yml, which configures metric scraping from the FastAPI app. This powers the Grafana dashboards for real-time monitoring of:
-
-Response time (p50, p95)
-
-Request volumes
-
-Drift and confidence metrics
-
-Feedback loop activity
-
- Offline Evaluation
-BERTScore Metrics on Validation Set
-The model was evaluated using BERTScore to measure how well the generated comments align with human references:
-
-Metric	Value
-Precision	0.7647
-Recall	0.7794
-F1 Score	0.7711
+| Dataset                  | Precision | Recall | F1 Score |
+|--------------------------|-----------|--------|----------|
+| Eval Set (pre-tuning)    | 0.7647    | 0.7794 | 0.7711   |
+| Test Set (pre-tuning)    | 0.7777    | 0.8077 | 0.7919   |
+| Test Set (post-tuning)   | 0.7929    | 0.8105 | 0.8013   |
 
 These scores indicate balanced and reliable comment generation with good semantic alignment to ground-truth comments.
 
- System Highlights
-Optimized LLaMA inference with ONNX + CUDA
+  - F1 distribution shows most outputs around 0.78–0.82.
+  - No strong correlation between prompt length and F1 score.
+  - Worst examples table shows edge cases (e.g. package.json files) with lowest F1.
 
-Real-time serving and feedback loop integration
+### Define a Business-Specific Evaluation
 
-Comprehensive monitoring via Prometheus & Grafana
+Success criteria for real-world deployment:
+- Increase in developer productivity (faster PR review time).
+- % of model-generated comments accepted without edits.
+- Ability of model to catch semantic or functional bugs.
+- Reuse of feedback data for continual retraining.
 
- Scalable deployment on Chameleon Cloud (A100 GPU)
+### Online Evaluation
+
+- Conducted using artificial user requests from a Flask frontend and Jupyter scripts.
+- Monitored Metrics via Grafana:
+  - Request latency (p50/p95/p99)
+  - Throughput
+  - Error rates (4xx/5xx)
+  - Feedback event counts by type (accepted/modified/rejected)
+
+### Close the Feedback Loop
+
+- `POST /feedback` stores feedback into object storage under `feedbackloop_logs/`.
+- Logged feedback categorized by case type.
+- Future retraining can use this data, weighted by case type (e.g. prioritize rewritten).
+
+### Optional: Monitor for Model Degradation
+
+Model Degradation:
+- Prometheus tracks long-term trends in prediction confidence and latency.
+- Alert rules can notify for re-training triggers based on quality drop.
 
 
  ## Model Training Pipeline Design
