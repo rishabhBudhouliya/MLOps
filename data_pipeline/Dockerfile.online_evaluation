@@ -1,0 +1,53 @@
+# Use an official Python runtime as a parent image
+FROM python:3.10-slim
+
+# Set environment variables
+ENV PYTHONDONTWRITEBYTECODE 1
+ENV PYTHONUNBUFFERED 1
+
+# Install system dependencies: curl for rclone install, and unzip for extracting rclone
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    unzip \
+    # bash is usually present in slim, but good to ensure for scripts
+    bash \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install rclone using the official install script
+RUN curl https://rclone.org/install.sh | bash && \
+    rclone --version
+
+# Set the working directory in the container
+WORKDIR /app
+
+# Install Python dependencies
+# This Dockerfile is in the data_pipeline directory, so requirements.txt is at the root of the context
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy the current directory contents (all scripts in data_pipeline) into the container at /app/
+COPY . /app/
+
+# --- Configuration Notes for Runtime ---
+# 1. GITHUB_TOKEN: Must be passed as an environment variable during `docker run`.
+#    Example: `docker run -e GITHUB_TOKEN=$GITHUB_TOKEN ...`
+#
+# 2. Config File: Mount your config.yaml.
+#    Example: `docker run -v /path/to/your/config.yaml:/app/config.yaml ...`
+#
+# 3. Handoff Storage: The path defined in `config.yaml` for `online_evaluation.handoff_storage_path`
+#    must be a volume mounted into the container.
+#    Example: If config.yaml has `handoff_storage_path: /mnt/handoff`,
+#             then run `docker run -v /path/to/host/handoff_dir:/mnt/handoff ...`
+#
+# 4. Intermediate Directory: The script uses a default, but it will be inside the container.
+#    If you need to inspect it and don't use --debug (which keeps it), it will be ephemeral.
+
+# Set the entrypoint to run the online evaluation script
+ENTRYPOINT ["python", "run_online_evaluation.py"]
+
+# CMD specifies default arguments for the entrypoint.
+# The --pr-identifier is mandatory and MUST be provided by the user at runtime.
+# Example: docker run <image_name> --pr-identifier "owner/repo/123"
+# Other arguments like --config can be overridden if needed.
+CMD ["--config", "config.yaml", "--intermediate-dir", "./pipeline_intermediate_online_docker"] 
