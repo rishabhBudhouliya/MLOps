@@ -272,7 +272,7 @@ Critical platform services are deployed using Helm charts defined in `k8s/platfo
 These services are configured via `argocd_add_platform.yml` and can be monitored through both the Kubernetes dashboard and ArgoCD UI. The containerization of these services and their management through Helm charts achieves the cloud-native approach required for enterprise-grade machine learning operations.
 
 Argocd dashboard: 
-![](continuous_x/argo dash.png?raw=true)
+![Argo Dashboard](continuous_x/argo%20dash.png)
 
 ### CI/CD and Continuous Training (Argo Workflows)
 
