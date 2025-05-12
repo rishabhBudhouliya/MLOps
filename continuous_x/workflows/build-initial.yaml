@@ -50,8 +50,8 @@ spec:
     container:
       image: gcr.io/kaniko-project/executor:latest
       args:
-        - --dockerfile=/mnt/workspace/model_serving/test_app/Dockerfile.serving
-        - --context=/mnt/workspace/model_serving/test_app
+        - --dockerfile=/mnt/workspace/model_serving/test/Dockerfile.serving
+        - --context=/mnt/workspace/model_serving/test
         - --destination=registry.kube-system.svc.cluster.local:5000/reviewer-bot:staging-1.0.0
         - --destination=registry.kube-system.svc.cluster.local:5000/reviewer-bot:canary-1.0.0
         - --destination=registry.kube-system.svc.cluster.local:5000/reviewer-bot:production-1.0.0
@@ -59,11 +59,3 @@ spec:
       volumeMounts:
         - name: workdir
           mountPath: /mnt/workspace
-      resources:
-        requests:
-          memory: "4Gi"
-          cpu: "2000m"
-        limits:
-          memory: "6Gi"
-          cpu: "4000m"
-
