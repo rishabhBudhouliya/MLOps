@@ -41,14 +41,14 @@ spec:
 
   - name: generate-version
     container:
-      image: busybox:1.36
-      command: [/bin/sh, -c]
+      image: alpine:3.18
+      command: [sh, -c]
       args:
         - |
           VERSION="v1.0.0-$(date +%Y%m%d%H%M%S)"
           mkdir -p /tmp/version
           echo "$VERSION" > /tmp/version/version.txt
-          cat /tmp/version/version.txt
+          echo "$VERSION"
       volumeMounts:
       - name: workdir
         mountPath: /tmp/version
@@ -63,8 +63,8 @@ spec:
       parameters:
       - name: model-version
     container:
-      image: curlimages/curl:8.6.0
-      command: [/bin/sh, -c]
+      image: curlimages/curl:7.85.0
+      command: [sh, -c]
       args:
         - |
           echo "Triggering training endpoint for version {{inputs.parameters.model-version}}..."
@@ -78,12 +78,14 @@ spec:
         mountPath: /tmp
 
   - name: trigger-pipeline
-    container:
-      image: argoproj/argocli:v3.4.8
+    inputs:
+      parameters:
+      - name: model-version
+    script:
+      image: argoproj/argoexec:v3.4.7
       command: [/bin/sh, -c]
-      args:
-        - |
-        VERSION="{{workflow.parameters.model-version}}"
+      source: |
+        VERSION="{{inputs.parameters.model-version}}"
         echo "Starting full pipeline for version $VERSION"
         
         # Submit build container image workflow
@@ -104,9 +106,3 @@ spec:
       volumeMounts:
       - name: workdir
         mountPath: /tmp
-
-# This WorkflowTemplate provides a comprehensive pipeline for:
-# 1. Generating a unique version
-# 2. Triggering a training endpoint
-# 3. Building a container image
-# 4. Promoting the model through environments (staging -> canary -> prod)
