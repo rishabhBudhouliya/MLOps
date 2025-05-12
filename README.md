@@ -64,11 +64,11 @@ Metric to be judged on:
 |                                  | m1.medium                    | 1        | 1            | MLflow Server: Host MLflow UI/backend                        |
 |                                  | m1.large or gpu_t4           | 1        | -            | Evaluation Runner: Run offline evaluation                    |
 | **System Infra & Deployment**    | m1.medium                    | 1        | 1            | CI/CD Setup: ArgoCD                                          |
-| **Evaluation**                   | gpu_a100 / gpu_v100 / gpu_t4 | 1        | 1            | Staging/Canary API Endpoint: Run the full inference service for load testing and A/B tests.  |
+| **Evaluation**                   | liqid_04            / gpu_t4 | 1        | 1            | Staging/Canary API Endpoint: Run the full inference service for load testing and A/B tests.  |
 |                                  | m1.medium                    | 1        | 1            | Webhook Handler (Staging/Prod): Handle incoming GitHub events. Needs reliability. FIP for GitHub communication. |
-| **Serving**                      | gpu_a100 / gpu_v100          | 1/2      | 1            | Production API Endpoint: Serve inference requests. Scale quantity based on load |
+| **Serving**                      | gpu_a100 / gigaio_04         | 1/2      | 1            | Production API Endpoint: Serve inference requests. Scale quantity based on load |
 |                                  | m1.medium                    | 1        | 1            | Webhook Handler: Handle incoming GitHub events reliably      |
-|                                  | gpu_a100 / gpu_v100          | 1        | -            | Retraining Pipeline: Run scheduled retraining jobs           |
+|                                  | gigaio_04                    | 1        | -            | Retraining Pipeline: Run scheduled retraining jobs           |
 
 ---
 # System Design
@@ -225,3 +225,83 @@ By 12 May 2025, the project supports:
 - Scalable rclone off-loading and multi-repo polling
 
 ---
+
+# Model Serving 
+
+
+# Model evaluation and Monitoring 
+
+### Directory Overview
+model_optimizations/llama_optimizations.ipynb
+Performed dynamic quantization on the original model to reduce size from 30GB to 5GB.
+
+Achieved an average inference latency of ~5 seconds on GPU (ONNX Runtime).
+
+Optimized version is used for serving in production.
+
+resources.ipynb
+Provisioned a GPU-enabled bare-metal server on Chameleon Cloud:
+
+Used chi Python client to automate VM setup.
+
+Configured networking, floating IP, and verified SSH connectivity.
+ Installed Docker CE and set up NVIDIA Container Toolkit for GPU support.
+Verified access to A100 GPU (gigaio_04, 40GB RAM) using nvidia-smi.
+
+persistent_data_access/
+Mounts object stores and volumes that contain:
+
+The base and quantized models.
+
+Datasets and tokenizers used for inference.
+
+Optimized artifacts used in deployment.
+
+llama_code_review_app/ — Core FastAPI Service
+A lightweight, production-ready FastAPI app that powers model inference and feedback logging:
+
+GET /: Health check endpoint.
+
+POST /predict: Accepts a code diff and returns structured review comments.
+
+POST /feedback: Captures user feedback (accepted, modified, or rewritten) to help with future retraining.
+
+GET /metrics: Exposes Prometheus-compatible metrics including:
+
+Inference latency
+
+Throughput
+
+Feedback counts
+
+ prometheus/
+Contains prometheus.yml, which configures metric scraping from the FastAPI app. This powers the Grafana dashboards for real-time monitoring of:
+
+Response time (p50, p95)
+
+Request volumes
+
+Drift and confidence metrics
+
+Feedback loop activity
+
+ Offline Evaluation
+BERTScore Metrics on Validation Set
+The model was evaluated using BERTScore to measure how well the generated comments align with human references:
+
+Metric	Value
+Precision	0.7647
+Recall	0.7794
+F1 Score	0.7711
+
+These scores indicate balanced and reliable comment generation with good semantic alignment to ground-truth comments.
+
+ System Highlights
+Optimized LLaMA inference with ONNX + CUDA
+
+Real-time serving and feedback loop integration
+
+Comprehensive monitoring via Prometheus & Grafana
+
+ Scalable deployment on Chameleon Cloud (A100 GPU)
+
