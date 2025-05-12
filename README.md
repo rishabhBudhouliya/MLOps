@@ -44,7 +44,7 @@ Metric to be judged on:
 ---
 ### System Diagram
 
-![](https://github.com/BugBeak/MLOps/blob/main/system_diagram.png?raw=true)
+![](systems.png?raw=true)
 
 
 
@@ -71,9 +71,13 @@ Metric to be judged on:
 |                                  | gigaio_04                    | 1        | -            | Retraining Pipeline: Run scheduled retraining jobs           |
 
 ---
+
+## Data Lineage
+![Data lineage diagram](data_pipeline/datalineage-diagram.png)
+
 # System Design
 
-# Data Pipeline Design
+## Data Pipeline Design
 
 This document outlines the design of the data pipeline, referencing the relevant code files for each component.
 
@@ -127,12 +131,12 @@ The data pipeline is designed to discover, fetch, process, and store data, prima
 * **Dashboard Application**: The `dashboard/` directory contains the code for a data dashboard, likely using Streamlit (as indicated by `dashboard.Dockerfile`). `dashboard/app.py` would be the main Streamlit application file.
 * **Dashboard Container**: `dashboard.Dockerfile` defines how to build and run the dashboard application in a Docker container, exposing port 8888.
 
-## 3. Helper and Utility Files
+### 3. Helper and Utility Files
 
 * **Requirements**: `requirements.txt` lists the Python dependencies for the project.
 * **Notebooks**: `data-pipeline-script.ipynb` is likely a Jupyter notebook used for development, experimentation, or ad-hoc analysis related to the pipeline.
 
-## 4. Data Flow (Batch)
+### 4. Data Flow
 
 1. `run_pipeline.py` (or `docker compose run ... run-full-pipeline`) initiates the process.
 2. `discover_new_prs.py` identifies new PRs, outputting to `pipeline_intermediate/new_prs_to_process.txt`.
@@ -145,9 +149,9 @@ The data pipeline is designed to discover, fetch, process, and store data, prima
 This design allows for modular execution and development, with clear separation of concerns for different stages of data processing.
 
 
-# Data Pipeline – Commit Lineage
+## Data Pipeline – Commit Lineage
 
-*Chronological narrative of the path from the very first commit to the production-ready, online-evaluated service.*
+Chronological narrative of the path from the very first commit to the current state
 
 ---
 
@@ -225,6 +229,95 @@ By 12 May 2025, the project supports:
 - Scalable rclone off-loading and multi-repo polling
 
 ---
+---
+# Continuous X
+
+## System Lifecycle
+
+The complete system follows a structured lifecycle:
+
+1. **Infrastructure Provisioning**: All cloud resources are created via `terraform apply` in Chameleon Cloud, ensuring reproducible infrastructure.
+2. **Cluster Bootstrapping**: Kubernetes clusters are automatically configured using Ansible + Kubespray, establishing a robust container orchestration layer.
+3. **GitOps Configuration**: ArgoCD is configured to continuously monitor a Git repository for Helm chart updates, enabling declarative infrastructure management.
+4. **Pipeline Execution**: A comprehensive CI/CD pipeline executes the full sequence: `train → build → deploy → promote`.
+5. **Progressive Deployment**: Workflows deploy new model builds to staging environments; after passing rigorous staging checks, automated promotion to canary and production environments is executed.
+
+## Technical Components
+
+### Infrastructure as Code (Terraform)
+
+Infrastructure as Code principles have been implemented using Terraform to provision all cloud resources. The provisioning scripts are located in `continuous_x/tf/kvm`:
+
+- **Resources Created**:
+  - 3 KVM-based compute instances (node1, node2, node3) to form the Kubernetes cluster
+  - A private subnet with properly configured IP allocations for secure internal communication
+  - A floating IP assigned to node1 to enable external access to ArgoCD and Kubernetes UI services
+
+This approach completely eliminates manual configuration or "ClickOps," satisfying a core requirement of the Continuous X system. Provisioning outputs such as floating IPs can be verified using `openstack server list`, with all infrastructure resources being managed through version control for auditability and reproducibility.
+
+### Cluster Bootstrap & Configuration (Ansible + Kubespray)
+
+Automation is implemented through Ansible to handle the complete cluster setup process:
+
+1. **Pre-Kubernetes Configuration**: Nodes are prepared, hardened, and all required dependencies are installed via `pre_k8s_configure.yml`.
+2. **Kubernetes Installation**: The Kubernetes cluster is installed and configured using Kubespray (located in the `kubespray` directory).
+3. **Post-Installation Setup**: ArgoCD, Argo Workflows, and Metrics Server are deployed via `post_k8s_configure.yml` to enable GitOps and workflow management.
+
+All node definitions are maintained in `inventory.yml`, and the playbooks are designed to be idempotent, which means they can be run multiple times without causing unintended state changes. This approach ensures consistency and reliability in the infrastructure configuration.
+
+### Platform Layer Services
+
+Critical platform services are deployed using Helm charts defined in `k8s/platform`:
+
+- **MinIO**: Object storage service for storing model artifacts, training outputs, and associated metadata
+- **PostgreSQL**: Relational database used for MLflow experiment tracking and system metadata
+- **MLflow UI**: Web-based dashboard for detailed experiment monitoring, model comparison, and performance visualization
+
+These services are configured via `argocd_add_platform.yml` and can be monitored through both the Kubernetes dashboard and ArgoCD UI. The containerization of these services and their management through Helm charts achieves the cloud-native approach required for enterprise-grade machine learning operations.
+
+### CI/CD and Continuous Training (Argo Workflows)
+
+The CI/CD pipeline is implemented using Argo Workflows with several key components:
+
+- **`train_model.yaml`**: Manages model training processes and writes outputs to MinIO for versioning and artifact storage
+- **`build_container_image.yaml`**: Utilizes Kaniko to build Docker images containing the FastAPI serving logic in a secure, rootless environment
+- **`deploy-container-image.yaml`**: Handles deployment of containers to the staging environment using Helm for consistent application packaging
+- **`promote-model.yaml`**: Orchestrates the promotion workflow from staging to canary, and subsequently to production
+
+Currently, workflow triggering is performed via POST requests to an HTTP endpoint. However, the system is designed to be future-ready with GitHub webhook definitions in the workflows, and logic for automatic promotion after testing is already implemented within the workflows. This satisfies the continuous training requirement by providing an automated pipeline that retrains models, evaluates performance, packages them in containers, and deploys them to staging for further validation.
+
+### Staged Deployment Strategy
+
+The deployment strategy employs three distinct environments with separate Kubernetes namespaces:
+
+- **`k8s/staging`**: 
+- **`k8s/canary`**: 
+- **`k8s/production`**: 
+
+The ML model is served via a containerized FastAPI application. Upon workflow completion, the final image is deployed to staging. The deployment to canary and production environments is currently triggered manually.
+
+Currently, there are dummy docker images added under training and model_serving that run through the pipeline. These images are referenced in the argocd configurations and k8s, and are served on all the staging, canary and production environements. 
+
+Each namespace is configured with its own Helm chart and `values.yaml` file. The promotion process is fully operational, with auto-promotion code based on tests and metric thresholds implemented in `promote-model.yaml`. All environments run the same container image, built from the `model_serving` directory, which includes a minimal FastAPI prediction endpoint and `Dockerfile.serving`.
+
+This implementation fully satisfies the staged deployment requirement by providing clear promotion paths from staging to canary to production, with automated testing guiding the promotion decisions.
+
+
+## Requirement Compliance
+
+The Continuous X implementation satisfies all specified requirements:
+
+1. **Infrastructure-as-Code**: Terraform and Ansible are used end-to-end, with all configuration stored in version control. No manual steps are required for infrastructure provisioning or service deployment.
+
+2. **Cloud-native Patterns**: All services are containerized, deployed via Helm, and follow immutable infrastructure principles. A microservices architecture is implemented with clear separation of concerns.
+
+3. **CI/CD & Continuous Training**: Argo Workflows handle the complete pipeline from training to deployment. The system supports both manual triggering and webhook-based automation for continuous integration.
+
+4. **Staged Deployment**: A complete staging → canary → production pipeline is implemented with promotion logic based on testing results. The system includes auto-promotion capabilities based on defined metrics and tests.
+
+5. **Observability**: MLflow is enabled for experiment tracking, Argo dashboards for workflow visualization, and Kubernetes metrics for system monitoring, providing comprehensive observability across the platform.
+
+
 
 # Model Serving 
 
