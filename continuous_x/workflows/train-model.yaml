@@ -1,4 +1,3 @@
-# train-model.yaml
 apiVersion: argoproj.io/v1alpha1
 kind: WorkflowTemplate
 metadata:
@@ -6,17 +5,16 @@ metadata:
 spec:
   entrypoint: full-pipeline
 
-  # Define input parameters for flexibility
   arguments:
     parameters:
     - name: model-version
-      value: "v1.0.0"  # Default version if not specified
+      value: "v1.0.0"
 
   volumeClaimTemplates:
   - metadata:
       name: workdir
     spec:
-      accessModes: [ "ReadWriteOnce" ]
+      accessModes: ["ReadWriteOnce"]
       resources:
         requests:
           storage: 2Gi
@@ -32,10 +30,30 @@ spec:
             parameters:
             - name: model-version
               value: "{{steps.generate-version.outputs.parameters.version}}"
-      - - name: build-and-deploy
-          template: trigger-pipeline
+      - - name: trigger-build
+          template: trigger-build
           arguments:
             parameters:
+            - name: model-version
+              value: "{{steps.generate-version.outputs.parameters.version}}"
+      - - name: promote-to-canary
+          template: promote-model
+          arguments:
+            parameters:
+            - name: source-environment
+              value: staging
+            - name: target-environment
+              value: canary
+            - name: model-version
+              value: "{{steps.generate-version.outputs.parameters.version}}"
+      - - name: promote-to-prod
+          template: promote-model
+          arguments:
+            parameters:
+            - name: source-environment
+              value: canary
+            - name: target-environment
+              value: prod
             - name: model-version
               value: "{{steps.generate-version.outputs.parameters.version}}"
 
@@ -68,41 +86,54 @@ spec:
       args:
         - |
           echo "Triggering training endpoint for version {{inputs.parameters.model-version}}..."
-          # Replace with actual training endpoint trigger
-          # Example (commented out):
-          # curl -X POST https://training-endpoint.example.com/train \
+          # Example: Uncomment and replace below with real endpoint
+          # curl -X POST https://your-training-service/train \
           #      -H "Content-Type: application/json" \
           #      -d '{"version": "{{inputs.parameters.model-version}}"}'
       volumeMounts:
       - name: workdir
         mountPath: /tmp
 
-  - name: trigger-pipeline
+  - name: trigger-build
     inputs:
       parameters:
       - name: model-version
-    script:
-      image: alpine:3.18  # or python:3.11-slim or bash-based image
-      command: [sh, -c]
-      source: |
-        VERSION="{{inputs.parameters.model-version}}"
-        echo "Starting full pipeline for version $VERSION"
+    resource:
+      action: create
+      manifest: |
+        apiVersion: argoproj.io/v1alpha1
+        kind: Workflow
+        metadata:
+          generateName: build-container-image-
+        spec:
+          workflowTemplateRef:
+            name: build-container-image
+          arguments:
+            parameters:
+            - name: model-version
+              value: "{{inputs.parameters.model-version}}"
 
-        # Submit build container image workflow
-        argo submit --from workflowtemplate/build-container-image \
-          -p model-version="$VERSION" --wait
-
-        # Submit promotion to canary
-        argo submit --from workflowtemplate/promote-model \
-          -p source-environment=staging \
-          -p target-environment=canary \
-          -p model-version="$VERSION" --wait
-
-        # Submit promotion to production
-        argo submit --from workflowtemplate/promote-model \
-          -p source-environment=canary \
-          -p target-environment=prod \
-          -p model-version="$VERSION" --wait
-      volumeMounts:
-      - name: workdir
-        mountPath: /tmp
+  - name: promote-model
+    inputs:
+      parameters:
+      - name: source-environment
+      - name: target-environment
+      - name: model-version
+    resource:
+      action: create
+      manifest: |
+        apiVersion: argoproj.io/v1alpha1
+        kind: Workflow
+        metadata:
+          generateName: promote-model-
+        spec:
+          workflowTemplateRef:
+            name: promote-model
+          arguments:
+            parameters:
+            - name: source-environment
+              value: "{{inputs.parameters.source-environment}}"
+            - name: target-environment
+              value: "{{inputs.parameters.target-environment}}"
+            - name: model-version
+              value: "{{inputs.parameters.model-version}}"
