@@ -6,45 +6,103 @@ metadata:
 spec:
   entrypoint: full-pipeline
 
+  # Define input parameters for flexibility
+  arguments:
+    parameters:
+    - name: model-version
+      value: "v1.0.0"  # Default version if not specified
+
+  volumeClaimTemplates:
+  - metadata:
+      name: workdir
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      resources:
+        requests:
+          storage: 2Gi
+
   templates:
   - name: full-pipeline
     steps:
+      - - name: generate-version
+          template: generate-version
       - - name: trigger-training-endpoint
           template: call-endpoint
+          arguments:
+            parameters:
+            - name: model-version
+              value: "{{steps.generate-version.outputs.parameters.version}}"
       - - name: build-and-deploy
           template: trigger-pipeline
+          arguments:
+            parameters:
+            - name: model-version
+              value: "{{steps.generate-version.outputs.parameters.version}}"
+
+  - name: generate-version
+    container:
+      image: alpine:3.18
+      command: [sh, -c]
+      args:
+        - |
+          VERSION="v1.0.0-$(date +%Y%m%d%H%M%S)"
+          mkdir -p /tmp/version
+          echo "$VERSION" > /tmp/version/version.txt
+          echo "$VERSION"
+      volumeMounts:
+      - name: workdir
+        mountPath: /tmp/version
+    outputs:
+      parameters:
+      - name: version
+        valueFrom:
+          path: /tmp/version/version.txt
 
   - name: call-endpoint
+    inputs:
+      parameters:
+      - name: model-version
     container:
       image: curlimages/curl:7.85.0
       command: [sh, -c]
       args:
         - |
-          echo "Triggering training endpoint..."
-          code_version=$(curl -s http://training-service.default.svc.cluster.local/train)
-          echo $code_version > /tmp/version
-    volumeMounts:
-    - name: workdir
-      mountPath: /tmp
+          echo "Triggering training endpoint for version {{inputs.parameters.model-version}}..."
+          # Replace with actual training endpoint trigger
+          # Example (commented out):
+          # curl -X POST https://training-endpoint.example.com/train \
+          #      -H "Content-Type: application/json" \
+          #      -d '{"version": "{{inputs.parameters.model-version}}"}'
+      volumeMounts:
+      - name: workdir
+        mountPath: /tmp
 
   - name: trigger-pipeline
+    inputs:
+      parameters:
+      - name: model-version
     script:
       image: argoproj/argoexec:v3.4.7
       command: [sh, -c]
       source: |
-        version=$(cat /tmp/version)
-        echo "Starting full pipeline for version $version"
-        argo submit --from workflowtemplate/build-container-image \ 
-          -p model-version=$version --wait
-        argo submit --from workflowtemplate/promote-workflow \ 
-          -p source-environment=staging -p target-environment=canary \ 
-          -p model-version=$version --wait
-        argo submit --from workflowtemplate/promote-workflow \ 
-          -p source-environment=canary -p target-environment=prod \ 
-          -p model-version=$version --wait
-
-  - name: workdir
-    persistentVolumeClaim:
-      claimName: pipeline-pvc
-
-# This set of WorkflowTemplates exposes a single `train-model` entrypoint (`full-pipeline`) that triggers training, runs the build, then automatically deploys to staging, canary, and prod.
+        VERSION="{{inputs.parameters.model-version}}"
+        echo "Starting full pipeline for version $VERSION"
+        
+        # Submit build container image workflow
+        argo submit --from workflowtemplate/build-container-image \
+          -p model-version="$VERSION" --wait
+        
+        # Submit promotion to canary
+        argo submit --from workflowtemplate/promote-model \
+          -p source-environment=staging \
+          -p target-environment=canary \
+          -p model-version="$VERSION" --wait
+        
+        # Submit promotion to production
+        argo submit --from workflowtemplate/promote-model \
+          -p source-environment=canary \
+          -p target-environment=prod \
+          -p model-version="$VERSION" --wait
+      volumeMounts:
+      - name: workdir
+        mountPath: /tmp

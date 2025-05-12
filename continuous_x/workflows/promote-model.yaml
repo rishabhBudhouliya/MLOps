@@ -1,3 +1,4 @@
+
 apiVersion: argoproj.io/v1alpha1
 kind: WorkflowTemplate
 metadata:
@@ -5,18 +6,51 @@ metadata:
 spec:
   entrypoint: promote-flow
 
+  arguments:
+    parameters:
+    - name: source-environment
+      value: staging
+    - name: target-environment
+      value: canary
+    - name: model-version
+      value: "v1.0.0"
+
   templates:
   - name: promote-flow
+    inputs:
+      parameters:
+      - name: source-environment
+      - name: target-environment
+      - name: model-version
     steps:
-      - - name: deploy-canary
+      - - name: deploy
           template: deploy
           arguments:
             parameters:
             - name: environment
-              value: canary
-      - - name: deploy-prod
-          template: deploy
-          arguments:
-            parameters:
-            - name: environment
-              value: prod
+              value: "{{inputs.parameters.target-environment}}"
+            - name: model-version
+              value: "{{inputs.parameters.model-version}}"
+
+  - name: deploy
+    inputs:
+      parameters:
+      - name: environment
+      - name: model-version
+    container:
+      image: argoproj/argocd:latest
+      command: [sh, -c]
+      args:
+        - |
+          echo "Deploying version {{inputs.parameters.model-version}} to {{inputs.parameters.environment}} environment..."
+          app_name="code-reviewer-{{inputs.parameters.environment}}"
+          argocd login argocd-server.argocd.svc.cluster.local \
+            --username admin --password "$ARGOCD_PASSWORD" --insecure
+          argocd app set "$app_name" --helm-set-string image.tag="{{inputs.parameters.model-version}}"
+          argocd app sync "$app_name"
+      env:
+        - name: ARGOCD_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: argocd-initial-admin-secret
+              key: password
