@@ -71,6 +71,10 @@ Metric to be judged on:
 |                                  | gpu_a100 / gpu_v100          | 1        | -            | Retraining Pipeline: Run scheduled retraining jobs           |
 
 ---
+
+# Data Lineage
+![Data lineage diagram](data_pipeline/datalineage-diagram.png)
+
 # System Design
 
 # Data Pipeline Design
