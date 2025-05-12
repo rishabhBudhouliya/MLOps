@@ -1,103 +1,50 @@
+# train-model.yaml
 apiVersion: argoproj.io/v1alpha1
 kind: WorkflowTemplate
 metadata:
   name: train-model
 spec:
-  entrypoint: training-and-build
-  arguments:
-    parameters:
-    - name: github-repo
-    - name: training-dataset-version
+  entrypoint: full-pipeline
 
   templates:
-  - name: training-and-build
+  - name: full-pipeline
     steps:
-      - - name: fetch-training-data
-          template: get-code-review-data
-          arguments:
-            parameters:
-            - name: github-repo
-              value: "{{workflow.parameters.github-repo}}"
-            - name: dataset-version
-              value: "{{workflow.parameters.training-dataset-version}}"
-      - - name: train-code-review-model
-          template: run-training
-          arguments:
-            parameters:
-            - name: dataset-path
-              value: "{{steps.fetch-training-data.outputs.result}}"
-      - - name: build-container
-          template: trigger-build
-          arguments:
-            parameters:
-            - name: model-version
-              value: "{{steps.train-code-review-model.outputs.result}}"
-          when: "{{steps.train-code-review-model.outputs.result}} != ''"
+      - - name: trigger-training-endpoint
+          template: call-endpoint
+      - - name: build-and-deploy
+          template: trigger-pipeline
 
-  - name: get-code-review-data
-    inputs:
-      parameters:
-      - name: github-repo
-      - name: dataset-version
+  - name: call-endpoint
     container:
-      image: python:3.11-slim
+      image: curlimages/curl:7.85.0
       command: [sh, -c]
       args:
         - |
-          pip install requests
-          python -c '
-          import os
-          import requests
-          import json
-          
-          # Download code review dataset from specified source
-          repo = "{{inputs.parameters.github-repo}}"
-          version = "{{inputs.parameters.dataset-version}}"
-          
-          # Logic to fetch dataset - this would be customized based on your data source
-          # For this example, assuming data is in S3/MinIO
-          
-          dataset_path = f"/tmp/code_review_data_{version}"
-          os.makedirs(dataset_path, exist_ok=True)
-          
-          print(dataset_path)
-          '
-      
-  - name: run-training
-    inputs:
-      parameters:
-      - name: dataset-path
-    container:
-      image: registry.kube-system.svc.cluster.local:5000/code-review-training:v0.1.0
-      command: [python, train.py]
-      args: ["--data-path", "{{inputs.parameters.dataset-path}}"]
-      volumeMounts:
-      - name: model-data
-        mountPath: /models
-      env:
-        - name: MLFLOW_TRACKING_URI
-          value: http://mlflow.project32-platform.svc.cluster.local:8000
-    outputs:
-      parameters:
-      - name: result
-        valueFrom:
-          path: /models/version.txt
+          echo "Triggering training endpoint..."
+          code_version=$(curl -s http://training-service.default.svc.cluster.local/train)
+          echo $code_version > /tmp/version
+    volumeMounts:
+    - name: workdir
+      mountPath: /tmp
 
-  - name: trigger-build
-    inputs:
-      parameters:
-      - name: model-version
-    resource:
-      action: create
-      manifest: |
-        apiVersion: argoproj.io/v1alpha1
-        kind: Workflow
-        metadata:
-          generateName: build-container-image-
-        spec:
-          workflowTemplateRef:
-            name: build-container-image
-          arguments:
-            parameters:
-            - name: model-version
-              value: "{{inputs.parameters.model-version}}"
+  - name: trigger-pipeline
+    script:
+      image: argoproj/argoexec:v3.4.7
+      command: [sh, -c]
+      source: |
+        version=$(cat /tmp/version)
+        echo "Starting full pipeline for version $version"
+        argo submit --from workflowtemplate/build-container-image \ 
+          -p model-version=$version --wait
+        argo submit --from workflowtemplate/promote-workflow \ 
+          -p source-environment=staging -p target-environment=canary \ 
+          -p model-version=$version --wait
+        argo submit --from workflowtemplate/promote-workflow \ 
+          -p source-environment=canary -p target-environment=prod \ 
+          -p model-version=$version --wait
+
+  - name: workdir
+    persistentVolumeClaim:
+      claimName: pipeline-pvc
+
+# This set of WorkflowTemplates exposes a single `train-model` entrypoint (`full-pipeline`) that triggers training, runs the build, then automatically deploys to staging, canary, and prod.
