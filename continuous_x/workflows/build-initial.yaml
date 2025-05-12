@@ -59,5 +59,3 @@ spec:
       volumeMounts:
         - name: workdir
           mountPath: /mnt/workspace
-
-
